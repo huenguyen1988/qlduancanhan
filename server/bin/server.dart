@@ -140,6 +140,60 @@ Future<void> main(List<String> args) async {
     );
   });
 
+  app.post('/api/auth/change_password', (Request req) async {
+    final body = await req.readAsString();
+    final data = jsonDecode(body) as Map<String, dynamic>;
+    final phone = (data['phone'] ?? '').toString().trim();
+    final oldPassword = (data['oldPassword'] ?? '').toString();
+    final newPassword = (data['newPassword'] ?? '').toString();
+
+    if (phone.isEmpty || oldPassword.isEmpty || newPassword.isEmpty) {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'missing_fields'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+    if (newPassword.length < 4) {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'weak_password'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final user = await usersColl.findOne({'phone': phone});
+    if (user == null) {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'user_not_found'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final expectedHash = user['passwordHash']?.toString() ?? '';
+    if (expectedHash.isEmpty ||
+        expectedHash != _hashPassword(phone, oldPassword)) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'invalid_credentials'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    await usersColl.update(
+      whereId(user['_id'].toString()),
+      {
+        r'$set': {'passwordHash': _hashPassword(phone, newPassword)}
+      },
+    );
+
+    return Response.ok(
+      jsonEncode({'success': true}),
+      headers: {'content-type': 'application/json'},
+    );
+  });
+
   // ---- Project routes ----
 
   app.get('/api/projects', (Request req) async {
@@ -223,6 +277,18 @@ Future<void> main(List<String> args) async {
 
     return Response.ok(jsonEncode({'success': true}),
         headers: {'content-type': 'application/json'});
+  });
+
+  app.delete('/api/projects/<id>', (Request req, String id) async {
+    // cascade delete
+    await transactionsColl.remove({'projectId': id});
+    await notesColl.remove({'projectId': id});
+    await projectsColl.remove(whereId(id));
+
+    return Response.ok(
+      jsonEncode({'success': true}),
+      headers: {'content-type': 'application/json'},
+    );
   });
 
   // Transactions for a project

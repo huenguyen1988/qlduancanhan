@@ -133,6 +133,17 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
     } catch (_) {}
   }
 
+  Future<void> _deleteProject(String projectId) async {
+    try {
+      final res = await http.delete(
+        Uri.parse('$apiBaseUrl/api/projects/$projectId'),
+      );
+      if (res.statusCode == 200) {
+        await _fetchProjects();
+      }
+    } catch (_) {}
+  }
+
   Future<void> _addTransaction(
     String projectId,
     ProjectTransaction tx,
@@ -220,6 +231,167 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
     } catch (_) {}
   }
 
+  Future<void> _showChangePasswordDialog(BuildContext context) async {
+    final oldController = TextEditingController();
+    final newController = TextEditingController();
+    final confirmController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    bool loading = false;
+    String? error;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: const Text('Đổi mật khẩu'),
+              content: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextFormField(
+                      controller: oldController,
+                      decoration: const InputDecoration(
+                        labelText: 'Mật khẩu hiện tại',
+                        prefixIcon: Icon(Icons.lock_outline),
+                      ),
+                      obscureText: true,
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Vui lòng nhập mật khẩu hiện tại';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      controller: newController,
+                      decoration: const InputDecoration(
+                        labelText: 'Mật khẩu mới',
+                        prefixIcon: Icon(Icons.lock_reset_outlined),
+                      ),
+                      obscureText: true,
+                      validator: (value) {
+                        if (value == null || value.length < 4) {
+                          return 'Mật khẩu mới tối thiểu 4 ký tự';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      controller: confirmController,
+                      decoration: const InputDecoration(
+                        labelText: 'Nhập lại mật khẩu mới',
+                        prefixIcon: Icon(Icons.check_circle_outline),
+                      ),
+                      obscureText: true,
+                      validator: (value) {
+                        if (value != newController.text) {
+                          return 'Mật khẩu nhập lại không khớp';
+                        }
+                        return null;
+                      },
+                    ),
+                    if (error != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        error!,
+                        style: TextStyle(color: Colors.red[700], fontSize: 13),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: loading ? null : () => Navigator.of(ctx).pop(),
+                  child: const Text('Hủy'),
+                ),
+                FilledButton(
+                  onPressed: loading
+                      ? null
+                      : () async {
+                          if (!formKey.currentState!.validate()) return;
+                          final user = _currentUser;
+                          if (user == null) return;
+
+                          setState(() {
+                            loading = true;
+                            error = null;
+                          });
+                          try {
+                            final res = await http.post(
+                              Uri.parse(
+                                  '$apiBaseUrl/api/auth/change_password'),
+                              headers: {'content-type': 'application/json'},
+                              body: jsonEncode({
+                                'phone': user.phone,
+                                'oldPassword': oldController.text,
+                                'newPassword': newController.text,
+                              }),
+                            );
+                            if (res.statusCode == 200) {
+                              if (ctx.mounted) {
+                                Navigator.of(ctx).pop();
+                              }
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content:
+                                        Text('Đổi mật khẩu thành công'),
+                                  ),
+                                );
+                              }
+                            } else {
+                              final data = jsonDecode(res.body)
+                                  as Map<String, dynamic>;
+                              setState(() {
+                                error =
+                                    (data['error'] ?? 'Đổi mật khẩu thất bại')
+                                        .toString();
+                              });
+                            }
+                          } catch (_) {
+                            setState(() {
+                              error = 'Không thể kết nối server';
+                            });
+                          } finally {
+                            setState(() {
+                              loading = false;
+                            });
+                          }
+                        },
+                  child: loading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Lưu'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _logout() {
+    setState(() {
+      _currentUser = null;
+      _selectedIndex = 0;
+      _projects.clear();
+      _users.clear();
+    });
+  }
+
   void _onTabChanged(int index) {
     setState(() {
       _selectedIndex = index;
@@ -257,6 +429,9 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                               index: _selectedIndex,
                               children: [
                                 ProjectListScreen(
+                                  currentUser: _currentUser!,
+                                  onChangePassword: _showChangePasswordDialog,
+                                  onLogout: _logout,
                                   projects: _projects,
                                   loading: _loadingProjects,
                                   onRefresh: _fetchProjects,
@@ -275,6 +450,7 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                                                   _addTransaction,
                                               onUpdateTransaction:
                                                   _updateTransaction,
+                                              onDeleteProject: _deleteProject,
                                             ),
                                           ),
                                         ),
@@ -310,6 +486,9 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                           )
                         : Scaffold(
                             body: ProjectListScreen(
+                              currentUser: _currentUser!,
+                              onChangePassword: _showChangePasswordDialog,
+                              onLogout: _logout,
                               projects: _projects,
                               loading: _loadingProjects,
                               onRefresh: _fetchProjects,
@@ -327,6 +506,7 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                                           onAddTransaction: _addTransaction,
                                           onUpdateTransaction:
                                               _updateTransaction,
+                                          onDeleteProject: _deleteProject,
                                         ),
                                       ),
                                     ),
@@ -629,6 +809,9 @@ String formatDate(DateTime date) {
 class ProjectListScreen extends StatelessWidget {
   const ProjectListScreen({
     super.key,
+    required this.currentUser,
+    required this.onChangePassword,
+    required this.onLogout,
     required this.projects,
     required this.loading,
     required this.onRefresh,
@@ -636,6 +819,9 @@ class ProjectListScreen extends StatelessWidget {
     required this.onOpenProject,
   });
 
+  final AppUser currentUser;
+  final Future<void> Function(BuildContext context) onChangePassword;
+  final VoidCallback onLogout;
   final List<Project> projects;
   final bool loading;
   final Future<void> Function() onRefresh;
@@ -648,6 +834,58 @@ class ProjectListScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Quản lý dự án'),
         centerTitle: true,
+        actions: [
+          PopupMenuButton<String>(
+            tooltip: currentUser.name.isNotEmpty
+                ? currentUser.name
+                : currentUser.phone,
+            icon: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  currentUser.name.isNotEmpty
+                      ? currentUser.name
+                      : currentUser.phone,
+                  style: const TextStyle(fontSize: 13),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(width: 6),
+                CircleAvatar(
+                  radius: 14,
+                  child: Text(
+                    (currentUser.name.isNotEmpty
+                            ? currentUser.name[0]
+                            : currentUser.phone.isNotEmpty
+                                ? currentUser.phone[0]
+                                : '?')
+                        .toUpperCase(),
+                  ),
+                ),
+                const SizedBox(width: 6),
+              ],
+            ),
+            onSelected: (value) async {
+              if (value == 'change_password') {
+                await onChangePassword(context);
+              } else if (value == 'logout') {
+                onLogout();
+              }
+            },
+            itemBuilder: (ctx) => const [
+              PopupMenuItem(
+                value: 'change_password',
+                child: Text('Đổi mật khẩu'),
+              ),
+              PopupMenuItem(
+                value: 'logout',
+                child: Text(
+                  'Đăng xuất',
+                  style: TextStyle(color: Colors.red),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
       body: Container(
         color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.2),
@@ -887,6 +1125,7 @@ class ProjectDetailScreen extends StatefulWidget {
     required this.onUpdateProject,
     required this.onAddTransaction,
     required this.onUpdateTransaction,
+    required this.onDeleteProject,
   });
 
   final Project project;
@@ -895,6 +1134,7 @@ class ProjectDetailScreen extends StatefulWidget {
       onAddTransaction;
   final Future<void> Function(String projectId, ProjectTransaction)
       onUpdateTransaction;
+  final Future<void> Function(String projectId) onDeleteProject;
 
   @override
   State<ProjectDetailScreen> createState() => _ProjectDetailScreenState();
@@ -1203,6 +1443,44 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
           IconButton(
             icon: const Icon(Icons.edit_outlined),
             onPressed: () => _showEditProjectDialog(context),
+          ),
+          IconButton(
+            tooltip: 'Xóa dự án',
+            icon: Icon(Icons.delete_outline, color: Colors.red[700]),
+            onPressed: () async {
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  title: const Text('Xóa dự án?'),
+                  content: const Text(
+                    'Hành động này sẽ xóa dự án và toàn bộ giao dịch/nhật ký liên quan. Bạn có chắc chắn muốn xóa?',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(ctx).pop(false),
+                      child: const Text('Hủy'),
+                    ),
+                    FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.red,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () => Navigator.of(ctx).pop(true),
+                      child: const Text('Xóa'),
+                    ),
+                  ],
+                ),
+              );
+
+              if (ok != true) return;
+              await widget.onDeleteProject(widget.project.id);
+              if (context.mounted) {
+                Navigator.of(context).pop();
+              }
+            },
           ),
         ],
       ),
