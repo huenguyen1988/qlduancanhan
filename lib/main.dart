@@ -30,6 +30,7 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
 
   final List<Project> _projects = [];
   final List<AppUser> _users = [];
+  AppUser? _currentUser;
 
   @override
   void initState() {
@@ -49,9 +50,15 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
       final res = await http.get(Uri.parse('$apiBaseUrl/api/projects'));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List<dynamic>;
+        final all = data.map((e) => Project.fromJson(e)).toList();
+        final user = _currentUser;
         _projects
           ..clear()
-          ..addAll(data.map((e) => Project.fromJson(e)));
+          ..addAll(
+            user == null || user.role == 'admin'
+                ? all
+                : all.where((p) => p.ownerPhone == user.phone),
+          );
       }
     } catch (_) {
       // ignore, keep current list
@@ -95,6 +102,7 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
         body: jsonEncode({
           'name': project.name,
           'description': project.description,
+          'ownerPhone': _currentUser?.phone,
         }),
       );
       if (res.statusCode == 200) {
@@ -227,67 +235,290 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
       ),
-      home: Builder(
-        builder: (context) {
-          return Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 480),
-              child: Scaffold(
-                body: IndexedStack(
-                  index: _selectedIndex,
-                  children: [
-                    ProjectListScreen(
-                      projects: _projects,
-                      loading: _loadingProjects,
-                      onRefresh: _fetchProjects,
-                      onAddProject: _addProject,
-                      onOpenProject: (project) {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (ctx) => Center(
-                              child: ConstrainedBox(
-                                constraints:
-                                    const BoxConstraints(maxWidth: 480),
-                                child: ProjectDetailScreen(
-                                  project: project,
-                                  onUpdateProject: _updateProject,
-                                  onAddTransaction: _addTransaction,
-                                  onUpdateTransaction: _updateTransaction,
+      home: _currentUser == null
+          ? LoginScreen(
+              onAuthenticated: (user) {
+                setState(() {
+                  _currentUser = user;
+                  _selectedIndex = 0;
+                });
+                _loadInitialData();
+              },
+            )
+          : Builder(
+              builder: (context) {
+                final isAdmin = _currentUser?.role == 'admin';
+                return Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 480),
+                    child: isAdmin
+                        ? Scaffold(
+                            body: IndexedStack(
+                              index: _selectedIndex,
+                              children: [
+                                ProjectListScreen(
+                                  projects: _projects,
+                                  loading: _loadingProjects,
+                                  onRefresh: _fetchProjects,
+                                  onAddProject: _addProject,
+                                  onOpenProject: (project) {
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (ctx) => Center(
+                                          child: ConstrainedBox(
+                                            constraints: const BoxConstraints(
+                                                maxWidth: 480),
+                                            child: ProjectDetailScreen(
+                                              project: project,
+                                              onUpdateProject: _updateProject,
+                                              onAddTransaction:
+                                                  _addTransaction,
+                                              onUpdateTransaction:
+                                                  _updateTransaction,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
                                 ),
-                              ),
+                                AdminUserScreen(
+                                  users: _users,
+                                  loading: _loadingUsers,
+                                  onRefresh: _fetchUsers,
+                                  onAddUser: _addUser,
+                                  onUpdateUser: _updateUser,
+                                  onDeleteUser: _deleteUser,
+                                ),
+                              ],
+                            ),
+                            bottomNavigationBar: NavigationBar(
+                              selectedIndex: _selectedIndex,
+                              onDestinationSelected: _onTabChanged,
+                              destinations: const [
+                                NavigationDestination(
+                                  icon: Icon(Icons.work_outline),
+                                  label: 'Dự án',
+                                ),
+                                NavigationDestination(
+                                  icon: Icon(
+                                      Icons.admin_panel_settings_outlined),
+                                  label: 'Admin',
+                                ),
+                              ],
+                            ),
+                          )
+                        : Scaffold(
+                            body: ProjectListScreen(
+                              projects: _projects,
+                              loading: _loadingProjects,
+                              onRefresh: _fetchProjects,
+                              onAddProject: _addProject,
+                              onOpenProject: (project) {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (ctx) => Center(
+                                      child: ConstrainedBox(
+                                        constraints: const BoxConstraints(
+                                            maxWidth: 480),
+                                        child: ProjectDetailScreen(
+                                          project: project,
+                                          onUpdateProject: _updateProject,
+                                          onAddTransaction: _addTransaction,
+                                          onUpdateTransaction:
+                                              _updateTransaction,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
                             ),
                           ),
-                        );
-                      },
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key, required this.onAuthenticated});
+
+  final void Function(AppUser user) onAuthenticated;
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _phoneController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _nameController = TextEditingController();
+  final _formKey = GlobalKey<FormState>();
+  bool _isLoginMode = true;
+  bool _loading = false;
+  String? _error;
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final phone = _phoneController.text.trim();
+      final password = _passwordController.text;
+      final name = _nameController.text.trim();
+
+      final uri = Uri.parse(
+        _isLoginMode
+            ? '$apiBaseUrl/api/auth/login'
+            : '$apiBaseUrl/api/auth/register',
+      );
+      final res = await http.post(
+        uri,
+        headers: {'content-type': 'application/json'},
+        body: jsonEncode({
+          'phone': phone,
+          'password': password,
+          if (!_isLoginMode) 'name': name,
+        }),
+      );
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final user = AppUser.fromJson(data);
+        widget.onAuthenticated(user);
+      } else {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        setState(() {
+          _error = (data['error'] ?? 'Lỗi đăng nhập/đăng ký').toString();
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _error = 'Không thể kết nối server';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 20),
+                  Text(
+                    'Quản lý thu chi dự án',
+                    style: Theme.of(context).textTheme.titleLarge,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _isLoginMode
+                        ? 'Đăng nhập bằng số điện thoại'
+                        : 'Đăng ký tài khoản mới (dùng thử 30 ngày)',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: Colors.grey[700]),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 24),
+                  TextFormField(
+                    controller: _phoneController,
+                    decoration: const InputDecoration(
+                      labelText: 'Số điện thoại',
+                      prefixIcon: Icon(Icons.phone_outlined),
                     ),
-                    AdminUserScreen(
-                      users: _users,
-                      loading: _loadingUsers,
-                      onRefresh: _fetchUsers,
-                      onAddUser: _addUser,
-                      onUpdateUser: _updateUser,
-                      onDeleteUser: _deleteUser,
+                    keyboardType: TextInputType.phone,
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'Vui lòng nhập số điện thoại';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _passwordController,
+                    decoration: const InputDecoration(
+                      labelText: 'Mật khẩu',
+                      prefixIcon: Icon(Icons.lock_outline),
+                    ),
+                    obscureText: true,
+                    validator: (value) {
+                      if (value == null || value.length < 4) {
+                        return 'Mật khẩu tối thiểu 4 ký tự';
+                      }
+                      return null;
+                    },
+                  ),
+                  if (!_isLoginMode) ...[
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _nameController,
+                      decoration: const InputDecoration(
+                        labelText: 'Tên hiển thị (tuỳ chọn)',
+                        prefixIcon: Icon(Icons.person_outline),
+                      ),
                     ),
                   ],
-                ),
-                bottomNavigationBar: NavigationBar(
-                  selectedIndex: _selectedIndex,
-                  onDestinationSelected: _onTabChanged,
-                  destinations: const [
-                    NavigationDestination(
-                      icon: Icon(Icons.work_outline),
-                      label: 'Dự án',
+                  const SizedBox(height: 16),
+                  if (_error != null) ...[
+                    Text(
+                      _error!,
+                      style: TextStyle(color: Colors.red[700], fontSize: 13),
                     ),
-                    NavigationDestination(
-                      icon: Icon(Icons.admin_panel_settings_outlined),
-                      label: 'Admin',
-                    ),
+                    const SizedBox(height: 8),
                   ],
-                ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: _loading ? null : _submit,
+                      child: _loading
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Text(_isLoginMode ? 'Đăng nhập' : 'Đăng ký'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: _loading
+                        ? null
+                        : () {
+                            setState(() {
+                              _isLoginMode = !_isLoginMode;
+                              _error = null;
+                            });
+                          },
+                    child: Text(_isLoginMode
+                        ? 'Chưa có tài khoản? Đăng ký'
+                        : 'Đã có tài khoản? Đăng nhập'),
+                  ),
+                ],
               ),
             ),
-          );
-        },
+          ),
+        ),
       ),
     );
   }
@@ -298,6 +529,7 @@ class Project {
     required this.id,
     required this.name,
     required this.description,
+    this.ownerPhone = '',
     this.totalIncome = 0,
     this.totalExpense = 0,
   });
@@ -305,6 +537,7 @@ class Project {
   final String id;
   String name;
   String description;
+  String ownerPhone;
   double totalIncome;
   double totalExpense;
 
@@ -313,6 +546,7 @@ class Project {
       id: json['id'] as String,
       name: json['name'] as String,
       description: (json['description'] ?? '') as String,
+      ownerPhone: (json['ownerPhone'] ?? '') as String,
       totalIncome: (json['totalIncome'] as num?)?.toDouble() ?? 0,
       totalExpense: (json['totalExpense'] as num?)?.toDouble() ?? 0,
     );
@@ -2259,35 +2493,43 @@ class _EmptyProjectsView extends StatelessWidget {
 class AppUser {
   AppUser({
     required this.id,
+    required this.phone,
     required this.name,
     required this.email,
     required this.role,
     required this.isActive,
+    required this.remainingDays,
   });
 
   final String id;
+  String phone;
   String name;
   String email;
   String role;
   bool isActive;
+  int remainingDays;
 
   factory AppUser.fromJson(Map<String, dynamic> json) {
     return AppUser(
       id: json['id'] as String,
-      name: json['name'] as String,
-      email: json['email'] as String,
-      role: json['role'] as String,
+      phone: (json['phone'] ?? '') as String,
+      name: (json['name'] ?? '') as String,
+      email: (json['email'] ?? '') as String,
+      role: (json['role'] ?? 'user') as String,
       isActive: json['isActive'] as bool? ?? true,
+      remainingDays: (json['remainingDays'] as num?)?.toInt() ?? 0,
     );
   }
 
   Map<String, dynamic> toJson({bool forCreate = false}) {
     return {
       if (!forCreate) 'id': id,
+      'phone': phone,
       'name': name,
       'email': email,
       'role': role,
       'isActive': isActive,
+      'expiresInDays': remainingDays,
     };
   }
 }
@@ -2351,7 +2593,11 @@ class AdminUserScreen extends StatelessWidget {
                             subtitle: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(user.email),
+                                Text(
+                                  user.phone.isEmpty
+                                      ? user.email
+                                      : user.phone,
+                                ),
                                 const SizedBox(height: 4),
                                 Row(
                                   children: [
@@ -2379,13 +2625,33 @@ class AdminUserScreen extends StatelessWidget {
                                       padding: const EdgeInsets.symmetric(
                                           horizontal: 8, vertical: 2),
                                       decoration: BoxDecoration(
+                                        color: Colors.purple.withOpacity(0.06),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text(
+                                        user.remainingDays > 0
+                                            ? '${user.remainingDays} ngày còn lại'
+                                            : 'Hết hạn',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.purple[800],
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 2),
+                                      decoration: BoxDecoration(
                                         color: user.isActive
                                             ? Colors.green.withOpacity(0.1)
                                             : Colors.red.withOpacity(0.1),
                                         borderRadius: BorderRadius.circular(12),
                                       ),
                                       child: Text(
-                                        user.isActive ? 'Đang hoạt động' : 'Khoá',
+                                        user.isActive
+                                            ? 'Đang hoạt động'
+                                            : 'Khoá',
                                         style: TextStyle(
                                           fontSize: 11,
                                           color: user.isActive
@@ -2403,19 +2669,23 @@ class AdminUserScreen extends StatelessWidget {
                                 if (value == 'toggle_active') {
                                   final updated = AppUser(
                                     id: user.id,
+                                    phone: user.phone,
                                     name: user.name,
                                     email: user.email,
                                     role: user.role,
                                     isActive: !user.isActive,
+                                    remainingDays: user.remainingDays,
                                   );
                                   await onUpdateUser(updated);
                                 } else if (value == 'toggle_role') {
                                   final updated = AppUser(
                                     id: user.id,
+                                    phone: user.phone,
                                     name: user.name,
                                     email: user.email,
                                     role: isAdmin ? 'user' : 'admin',
                                     isActive: user.isActive,
+                                    remainingDays: user.remainingDays,
                                   );
                                   await onUpdateUser(updated);
                                 } else if (value == 'delete') {
@@ -2461,6 +2731,7 @@ class AdminUserScreen extends StatelessWidget {
 
   void _showAddUserDialog(BuildContext context) {
     final nameController = TextEditingController();
+    final phoneController = TextEditingController();
     final emailController = TextEditingController();
     String role = 'user';
     final formKey = GlobalKey<FormState>();
@@ -2484,6 +2755,20 @@ class AdminUserScreen extends StatelessWidget {
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
                     return 'Vui lòng nhập tên';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: phoneController,
+                decoration: const InputDecoration(
+                  labelText: 'Số điện thoại',
+                  prefixIcon: Icon(Icons.phone_outlined),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Vui lòng nhập số điện thoại';
                   }
                   return null;
                 },
@@ -2546,10 +2831,12 @@ class AdminUserScreen extends StatelessWidget {
               if (!formKey.currentState!.validate()) return;
               final user = AppUser(
                 id: '',
+                phone: phoneController.text.trim(),
                 name: nameController.text.trim(),
                 email: emailController.text.trim(),
                 role: role,
                 isActive: true,
+                remainingDays: 30,
               );
               await onAddUser(user);
               if (context.mounted) {

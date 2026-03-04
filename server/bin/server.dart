@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:mongo_dart/mongo_dart.dart' as mongo;
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
@@ -20,6 +21,8 @@ Future<void> main(List<String> args) async {
   final usersColl = db.collection('users');
   final notesColl = db.collection('project_notes');
 
+  await _migrateUsers(usersColl);
+
   await _seedIfEmpty(
     projectsColl: projectsColl,
     transactionsColl: transactionsColl,
@@ -28,6 +31,114 @@ Future<void> main(List<String> args) async {
   );
 
   final app = Router();
+
+  // ---- Auth routes ----
+
+  app.post('/api/auth/register', (Request req) async {
+    final body = await req.readAsString();
+    final data = jsonDecode(body) as Map<String, dynamic>;
+    final phone = (data['phone'] ?? '').toString().trim();
+    final password = (data['password'] ?? '').toString();
+    final name = (data['name'] ?? '').toString().trim();
+
+    if (phone.isEmpty || password.isEmpty) {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'phone_and_password_required'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final existing = await usersColl.findOne({'phone': phone});
+    if (existing != null) {
+      return Response(
+        409,
+        body: jsonEncode({'error': 'phone_exists'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final id = 'u_${DateTime.now().microsecondsSinceEpoch}';
+    final now = DateTime.now().toUtc();
+    final expiresAt = now.add(const Duration(days: 30));
+
+    final userDoc = {
+      '_id': id,
+      'phone': phone,
+      'passwordHash': _hashPassword(phone, password),
+      'name': name.isEmpty ? 'Người dùng mới' : name,
+      'email': '',
+      'role': 'user',
+      'isActive': true,
+      'createdAt': now,
+      'expiresAt': expiresAt,
+    };
+
+    await usersColl.insert(userDoc);
+
+    final json = _userToJson(userDoc);
+    return Response.ok(
+      jsonEncode(json),
+      headers: {'content-type': 'application/json'},
+    );
+  });
+
+  app.post('/api/auth/login', (Request req) async {
+    final body = await req.readAsString();
+    final data = jsonDecode(body) as Map<String, dynamic>;
+    final phone = (data['phone'] ?? '').toString().trim();
+    final password = (data['password'] ?? '').toString();
+
+    if (phone.isEmpty || password.isEmpty) {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'phone_and_password_required'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final user = await usersColl.findOne({'phone': phone});
+    if (user == null) {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'user_not_found'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final expectedHash = user['passwordHash']?.toString() ?? '';
+    if (expectedHash.isEmpty ||
+        expectedHash != _hashPassword(phone, password)) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'invalid_credentials'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    if (user['isActive'] == false) {
+      return Response(
+        403,
+        body: jsonEncode({'error': 'user_blocked'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final expiresAt = user['expiresAt'] as DateTime?;
+    if (expiresAt != null && expiresAt.isBefore(DateTime.now().toUtc())) {
+      return Response(
+        403,
+        body: jsonEncode({'error': 'subscription_expired'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final json = _userToJson(user);
+    return Response.ok(
+      jsonEncode(json),
+      headers: {'content-type': 'application/json'},
+    );
+  });
 
   // ---- Project routes ----
 
@@ -56,6 +167,7 @@ Future<void> main(List<String> args) async {
         'id': projectId,
         'name': p['name'],
         'description': p['description'] ?? '',
+        'ownerPhone': p['ownerPhone'] ?? '',
         'totalIncome': income,
         'totalExpense': expense,
       });
@@ -76,6 +188,8 @@ Future<void> main(List<String> args) async {
       '_id': id,
       'name': data['name'],
       'description': data['description'] ?? '',
+      if (data['ownerPhone'] != null)
+        'ownerPhone': (data['ownerPhone'] as String).trim(),
     };
 
     await projectsColl.insert(doc);
@@ -85,6 +199,7 @@ Future<void> main(List<String> args) async {
         'id': id,
         'name': doc['name'],
         'description': doc['description'],
+        'ownerPhone': doc['ownerPhone'] ?? '',
         'totalIncome': 0,
         'totalExpense': 0,
       }),
@@ -266,15 +381,7 @@ Future<void> main(List<String> args) async {
 
   app.get('/api/users', (Request req) async {
     final users = await usersColl.find().toList();
-    final result = users
-        .map((u) => {
-              'id': u['_id'],
-              'name': u['name'],
-              'email': u['email'],
-              'role': u['role'],
-              'isActive': u['isActive'] ?? true,
-            })
-        .toList();
+    final result = users.map(_userToJson).toList();
 
     return Response.ok(
       jsonEncode(result),
@@ -286,25 +393,25 @@ Future<void> main(List<String> args) async {
     final body = await req.readAsString();
     final data = jsonDecode(body) as Map<String, dynamic>;
     final id = 'u_${DateTime.now().microsecondsSinceEpoch}';
+    final now = DateTime.now().toUtc();
+    final expiresAt = now.add(const Duration(days: 30));
 
     final userDoc = {
       '_id': id,
-      'name': data['name'],
-      'email': data['email'],
+      'phone': data['phone'] ?? '',
+      'passwordHash': data['passwordHash'] ?? '',
+      'name': data['name'] ?? '',
+      'email': data['email'] ?? '',
       'role': data['role'] ?? 'user',
       'isActive': data['isActive'] ?? true,
+      'createdAt': now,
+      'expiresAt': expiresAt,
     };
 
     await usersColl.insert(userDoc);
 
     return Response.ok(
-      jsonEncode({
-        'id': id,
-        'name': userDoc['name'],
-        'email': userDoc['email'],
-        'role': userDoc['role'],
-        'isActive': userDoc['isActive'],
-      }),
+      jsonEncode(_userToJson(userDoc)),
       headers: {'content-type': 'application/json'},
     );
   });
@@ -313,17 +420,25 @@ Future<void> main(List<String> args) async {
     final body = await req.readAsString();
     final data = jsonDecode(body) as Map<String, dynamic>;
 
-    await usersColl.update(
-      whereId(id),
-      {
-        r'$set': {
-          'name': data['name'],
-          'email': data['email'],
-          'role': data['role'],
-          'isActive': data['isActive'],
-        }
-      },
-    );
+    final update = <String, dynamic>{};
+    if (data.containsKey('name')) update['name'] = data['name'];
+    if (data.containsKey('email')) update['email'] = data['email'];
+    if (data.containsKey('role')) update['role'] = data['role'];
+    if (data.containsKey('isActive')) update['isActive'] = data['isActive'];
+    if (data.containsKey('expiresInDays')) {
+      final days = (data['expiresInDays'] as num).toInt();
+      final now = DateTime.now().toUtc();
+      update['expiresAt'] = now.add(Duration(days: days));
+    }
+
+    if (update.isNotEmpty) {
+      await usersColl.update(
+        whereId(id),
+        {
+          r'$set': update,
+        },
+      );
+    }
 
     return Response.ok(jsonEncode({'success': true}),
         headers: {'content-type': 'application/json'});
@@ -392,22 +507,135 @@ Future<void> _seedIfEmpty({
   }
 
   if (await usersColl.count() == 0) {
+    final now = DateTime.now().toUtc();
     await usersColl.insertMany([
       {
         '_id': 'u_admin',
+        'phone': 'admin',
+        'passwordHash': _hashPassword('admin', 'admin123'),
         'name': 'Quản trị viên',
         'email': 'admin@example.com',
         'role': 'admin',
         'isActive': true,
+        'createdAt': now,
+        'expiresAt': now.add(const Duration(days: 3650)),
       },
       {
         '_id': 'u_user1',
+        'phone': '0900000000',
+        'passwordHash': _hashPassword('0900000000', '123456'),
         'name': 'Người dùng 1',
         'email': 'user1@example.com',
         'role': 'user',
         'isActive': true,
+        'createdAt': now,
+        'expiresAt': now.add(const Duration(days: 30)),
       },
     ]);
   }
+}
+
+Future<void> _migrateUsers(mongo.DbCollection usersColl) async {
+  // Nếu bạn đã seed user theo schema cũ (không có phone/passwordHash/expiresAt),
+  // ta sẽ cập nhật để tương thích đăng nhập mới.
+  final now = DateTime.now().toUtc();
+
+  // 1) Đảm bảo admin cũ có đủ field
+  final admin = await usersColl.findOne(whereId('u_admin'));
+  if (admin != null) {
+    final update = <String, dynamic>{};
+    update.putIfAbsent('phone', () => admin['phone'] ?? 'admin');
+    update.putIfAbsent('passwordHash', () {
+      // default admin password: admin123
+      return _hashPassword('admin', 'admin123');
+    });
+    update.putIfAbsent('createdAt', () => admin['createdAt'] ?? now);
+    update.putIfAbsent(
+      'expiresAt',
+      () => admin['expiresAt'] ?? now.add(const Duration(days: 3650)),
+    );
+    update.putIfAbsent('isActive', () => admin['isActive'] ?? true);
+    update.putIfAbsent('role', () => admin['role'] ?? 'admin');
+    update.putIfAbsent('name', () => admin['name'] ?? 'Quản trị viên');
+    update.putIfAbsent('email', () => admin['email'] ?? 'admin@example.com');
+
+    await usersColl.update(
+      whereId('u_admin'),
+      {
+        r'$set': update,
+      },
+    );
+  }
+
+  // 2) Với các user cũ không có phone/passwordHash/expiresAt:
+  // - gán phone = email nếu email giống số điện thoại, ngược lại dùng _id
+  // - passwordHash để trống -> sẽ không đăng nhập được cho tới khi set lại
+  final cursor = usersColl.find({
+    r'$or': [
+      {'phone': {r'$exists': false}},
+      {'expiresAt': {r'$exists': false}},
+      {'createdAt': {r'$exists': false}},
+    ]
+  });
+
+  await for (final u in cursor) {
+    final id = u['_id']?.toString() ?? '';
+    if (id.isEmpty) continue;
+
+    final email = (u['email'] ?? '').toString().trim();
+    final existingPhone = (u['phone'] ?? '').toString().trim();
+
+    String phone = existingPhone;
+    if (phone.isEmpty) {
+      // Nếu email là số điện thoại (chỉ digits), dùng email làm phone
+      final digitsOnly = RegExp(r'^\d{8,15}$');
+      if (digitsOnly.hasMatch(email)) {
+        phone = email;
+      } else {
+        phone = id; // fallback
+      }
+    }
+
+    final update = <String, dynamic>{
+      if (u['phone'] == null) 'phone': phone,
+      if (u['createdAt'] == null) 'createdAt': now,
+      if (u['expiresAt'] == null) 'expiresAt': now.add(const Duration(days: 30)),
+      if (u['isActive'] == null) 'isActive': true,
+      if (u['role'] == null) 'role': 'user',
+      if (u['passwordHash'] == null) 'passwordHash': '',
+    };
+
+    if (update.isNotEmpty) {
+      await usersColl.update(whereId(id), {r'$set': update});
+    }
+  }
+}
+
+String _hashPassword(String phone, String password) {
+  final input = '$phone::$password::qlduancanhan_salt';
+  final bytes = utf8.encode(input);
+  return crypto.sha256.convert(bytes).toString();
+}
+
+Map<String, dynamic> _userToJson(Map<String, dynamic> u) {
+  final expiresAt = u['expiresAt'] as DateTime?;
+  int remainingDays = 0;
+  if (expiresAt != null) {
+    final now = DateTime.now().toUtc();
+    remainingDays = expiresAt.isBefore(now)
+        ? 0
+        : expiresAt.difference(now).inDays;
+  }
+
+  return {
+    'id': u['_id'],
+    'phone': u['phone'] ?? '',
+    'name': u['name'] ?? '',
+    'email': u['email'] ?? '',
+    'role': u['role'] ?? 'user',
+    'isActive': u['isActive'] ?? true,
+    'expiresAt': expiresAt?.toIso8601String(),
+    'remainingDays': remainingDays,
+  };
 }
 
