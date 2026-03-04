@@ -1,0 +1,13 @@
+name: duan1_server
+description: "Simple Dart backend for duan1 Flutter app using MongoDB"
+version: 1.0.0
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  mongo_dart: ^0.10.3
+  shelf: ^1.4.1
+  shelf_router: ^1.1.4
+  shelf_cors_headers: ^0.1.5
+
