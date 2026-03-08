@@ -231,6 +231,17 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
     } catch (_) {}
   }
 
+  Future<void> _extendUser(String userId, int addDays) async {
+    try {
+      await http.put(
+        Uri.parse('$apiBaseUrl/api/users/$userId'),
+        headers: {'content-type': 'application/json'},
+        body: jsonEncode({'addDays': addDays}),
+      );
+      await _fetchUsers();
+    } catch (_) {}
+  }
+
   Future<void> _showChangePasswordDialog(BuildContext context) async {
     final oldController = TextEditingController();
     final newController = TextEditingController();
@@ -465,6 +476,7 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                                   onAddUser: _addUser,
                                   onUpdateUser: _updateUser,
                                   onDeleteUser: _deleteUser,
+                                  onExtendUser: _extendUser,
                                 ),
                               ],
                             ),
@@ -794,8 +806,15 @@ class ProjectNote {
 }
 
 String formatCurrency(double value) {
-  // Đơn giản: làm tròn và thêm "đ"
-  return '${value.toStringAsFixed(0)} đ';
+  final n = value.round().abs();
+  final str = n.toString();
+  final sb = StringBuffer();
+  for (var i = 0; i < str.length; i++) {
+    if (i > 0 && (str.length - i) % 3 == 0) sb.write(',');
+    sb.write(str[i]);
+  }
+  final sign = value < 0 ? '-' : '';
+  return '$sign$sb đ';
 }
 
 String formatDate(DateTime date) {
@@ -1548,13 +1567,17 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                             const SizedBox(width: 8),
                             const Text('Số dư hiện tại'),
                             const Spacer(),
-                            Text(
-                              formatCurrency(balance),
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: balance >= 0
-                                    ? Colors.teal
-                                    : Colors.red[700],
+                            Flexible(
+                              child: Text(
+                                formatCurrency(balance),
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: balance >= 0
+                                      ? Colors.teal
+                                      : Colors.red[700],
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
                               ),
                             ),
                           ],
@@ -1722,18 +1745,23 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      crossAxisAlignment: CrossAxisAlignment.end,
-                                      children: [
-                                        Text(
-                                          '$sign${formatCurrency(tx.amount)}',
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w600,
-                                            color: color,
+                                    Flexible(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        crossAxisAlignment: CrossAxisAlignment.end,
+                                        children: [
+                                          Text(
+                                            '$sign${formatCurrency(tx.amount)}',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.w600,
+                                              color: color,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                            maxLines: 1,
                                           ),
-                                        ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
                                     if (trailing != null) ...[
                                       const SizedBox(width: 8),
@@ -2239,23 +2267,30 @@ class _OverviewTile extends StatelessWidget {
             child: Icon(icon, size: 18),
           ),
           const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey[700],
-                    ),
-              ),
-              Text(
-                formatCurrency(amount),
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: color.darken(0.2),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey[700],
+                      ),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
                 ),
-              ),
-            ],
+                Text(
+                  formatCurrency(amount),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: color.darken(0.2),
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -2821,6 +2856,7 @@ class AdminUserScreen extends StatelessWidget {
     required this.onAddUser,
     required this.onUpdateUser,
     required this.onDeleteUser,
+    required this.onExtendUser,
   });
 
   final List<AppUser> users;
@@ -2829,6 +2865,7 @@ class AdminUserScreen extends StatelessWidget {
   final Future<void> Function(AppUser user) onAddUser;
   final Future<void> Function(AppUser user) onUpdateUser;
   final Future<void> Function(String id) onDeleteUser;
+  final Future<void> Function(String userId, int addDays) onExtendUser;
 
   @override
   Widget build(BuildContext context) {
@@ -2966,6 +3003,8 @@ class AdminUserScreen extends StatelessWidget {
                                     remainingDays: user.remainingDays,
                                   );
                                   await onUpdateUser(updated);
+                                } else if (value == 'extend') {
+                                  _showExtendDialog(ctx, user, onExtendUser);
                                 } else if (value == 'delete') {
                                   await onDeleteUser(user.id);
                                 }
@@ -2982,6 +3021,16 @@ class AdminUserScreen extends StatelessWidget {
                                   child: Text(isAdmin
                                       ? 'Chuyển thành User'
                                       : 'Chuyển thành Admin'),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'extend',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.date_range, size: 20),
+                                      SizedBox(width: 8),
+                                      Text('Gia hạn sử dụng'),
+                                    ],
+                                  ),
                                 ),
                                 const PopupMenuItem(
                                   value: 'delete',
@@ -3003,6 +3052,66 @@ class AdminUserScreen extends StatelessWidget {
         onPressed: () => _showAddUserDialog(context),
         icon: const Icon(Icons.person_add_alt),
         label: const Text('Thêm user'),
+      ),
+    );
+  }
+
+  static void _showExtendDialog(
+    BuildContext context,
+    AppUser user,
+    Future<void> Function(String userId, int addDays) onExtendUser,
+  ) {
+    final daysController = TextEditingController(text: '30');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Gia hạn sử dụng'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'User: ${user.name} (${user.phone.isNotEmpty ? user.phone : user.email})',
+              style: Theme.of(ctx).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: daysController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Thêm số ngày',
+                hintText: '30',
+                prefixIcon: Icon(Icons.calendar_today_outlined),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Huỷ'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final days = int.tryParse(daysController.text.trim());
+              if (days == null || days < 1) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(content: Text('Vui lòng nhập số ngày hợp lệ (≥ 1)')),
+                );
+                return;
+              }
+              Navigator.pop(ctx);
+              await onExtendUser(user.id, days);
+              if (ctx.mounted) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  SnackBar(content: Text('Đã gia hạn thêm $days ngày cho user')),
+                );
+              }
+            },
+            child: const Text('Gia hạn'),
+          ),
+        ],
       ),
     );
   }

@@ -496,6 +496,19 @@ Future<void> main(List<String> args) async {
       final now = DateTime.now().toUtc();
       update['expiresAt'] = now.add(Duration(days: days));
     }
+    if (data.containsKey('addDays')) {
+      final addDays = (data['addDays'] as num).toInt();
+      if (addDays > 0) {
+        final user = await usersColl.findOne(whereId(id));
+        final now = DateTime.now().toUtc();
+        DateTime base = now;
+        if (user != null && user['expiresAt'] != null) {
+          final current = user['expiresAt'] as DateTime;
+          if (current.isAfter(now)) base = current;
+        }
+        update['expiresAt'] = base.add(Duration(days: addDays));
+      }
+    }
 
     if (update.isNotEmpty) {
       await usersColl.update(
