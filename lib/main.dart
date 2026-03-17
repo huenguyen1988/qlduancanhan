@@ -242,6 +242,29 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
     } catch (_) {}
   }
 
+  Future<void> _adminChangeUserPassword(
+      String userId, String newPassword) async {
+    try {
+      await http.post(
+        Uri.parse('$apiBaseUrl/api/users/$userId/change-password'),
+        headers: {'content-type': 'application/json'},
+        body: jsonEncode({'newPassword': newPassword}),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _adminUpdateUserPaymentQr(
+      String userId, String? paymentQrBase64) async {
+    try {
+      await http.put(
+        Uri.parse('$apiBaseUrl/api/users/$userId'),
+        headers: {'content-type': 'application/json'},
+        body: jsonEncode({'paymentQrBase64': paymentQrBase64}),
+      );
+      await _fetchUsers();
+    } catch (_) {}
+  }
+
   Future<void> _showChangePasswordDialog(BuildContext context) async {
     final oldController = TextEditingController();
     final newController = TextEditingController();
@@ -411,12 +434,114 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
 
   @override
   Widget build(BuildContext context) {
+    final baseColor = const Color(0xFF0B1F3B); // navy chính
+    final accentColor = const Color(0xFF1E88E5); // xanh dương điểm nhấn
+
     return MaterialApp(
       title: 'Quản lý thu chi dự án',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: baseColor,
+          primary: baseColor,
+          secondary: accentColor,
+          brightness: Brightness.light,
+        ),
+        scaffoldBackgroundColor: const Color(0xFFF3F5F9),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF0B1F3B),
+          foregroundColor: Colors.white,
+          elevation: 0,
+          centerTitle: true,
+          titleTextStyle: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
+        ),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: Colors.white,
+          indicatorColor: baseColor.withOpacity(0.1),
+          iconTheme: WidgetStateProperty.resolveWith(
+            (states) => IconThemeData(
+              color: states.contains(WidgetState.selected)
+                  ? baseColor
+                  : Colors.grey[600],
+            ),
+          ),
+          labelTextStyle: WidgetStateProperty.resolveWith(
+            (states) => TextStyle(
+              fontSize: 12,
+              fontWeight:
+                  states.contains(WidgetState.selected) ? FontWeight.w600 : FontWeight.w400,
+              color: states.contains(WidgetState.selected)
+                  ? baseColor
+                  : Colors.grey[700],
+            ),
+          ),
+        ),
+        cardTheme: CardThemeData(
+          color: Colors.white,
+          elevation: 1,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade300),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade300),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: baseColor, width: 1.4),
+          ),
+          filled: true,
+          fillColor: Colors.white,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        ),
+        textTheme: ThemeData.light().textTheme.apply(
+              bodyColor: const Color(0xFF111827),
+              displayColor: const Color(0xFF111827),
+            ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            backgroundColor: baseColor,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+          ),
+        ),
+        floatingActionButtonTheme: FloatingActionButtonThemeData(
+          backgroundColor: baseColor,
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+        ),
+        chipTheme: ChipThemeData(
+          backgroundColor: baseColor.withOpacity(0.06),
+          selectedColor: baseColor,
+          labelStyle: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+        ),
       ),
       home: _currentUser == null
           ? LoginScreen(
@@ -477,6 +602,10 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                                   onUpdateUser: _updateUser,
                                   onDeleteUser: _deleteUser,
                                   onExtendUser: _extendUser,
+                                  onChangeUserPassword:
+                                      _adminChangeUserPassword,
+                                  onUpdateUserPaymentQr:
+                                      _adminUpdateUserPaymentQr,
                                 ),
                               ],
                             ),
@@ -817,11 +946,112 @@ String formatCurrency(double value) {
   return '$sign$sb đ';
 }
 
+/// Text số tiền tự co chữ để luôn hiển thị trên 1 dòng
+class _AmountText extends StatelessWidget {
+  const _AmountText(
+    this.value, {
+    super.key,
+    this.style,
+    this.prefixSign,
+  });
+
+  final double value;
+  final TextStyle? style;
+  final String? prefixSign;
+
+  @override
+  Widget build(BuildContext context) {
+    final baseStyle =
+        style ?? Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600);
+    final sign = prefixSign ?? '';
+
+    return FittedBox(
+      alignment: Alignment.centerRight,
+      fit: BoxFit.scaleDown,
+      child: Text(
+        '$sign${formatCurrency(value)}',
+        style: baseStyle,
+        maxLines: 1,
+        overflow: TextOverflow.visible,
+        softWrap: false,
+      ),
+    );
+  }
+}
+
 String formatDate(DateTime date) {
   final d = date.day.toString().padLeft(2, '0');
   final m = date.month.toString().padLeft(2, '0');
   final y = date.year.toString();
   return '$d/$m/$y';
+}
+
+void _showUserPaymentQrDialog(BuildContext context, AppUser user) {
+  if (user.paymentQrBase64 == null) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Thanh toán'),
+        content: const Text(
+          'Hiện chưa có mã QR thanh toán. Vui lòng liên hệ admin để được cập nhật.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Đóng'),
+          ),
+        ],
+      ),
+    );
+    return;
+  }
+
+  final bytes = base64Decode(user.paymentQrBase64!);
+
+  showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Text('Mã QR thanh toán'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: Image.memory(
+              bytes,
+              height: 220,
+              width: 220,
+              fit: BoxFit.cover,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Quét mã để thanh toán cho tài khoản:',
+            style: Theme.of(ctx).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${user.name} (${user.phone.isNotEmpty ? user.phone : user.email})',
+            style: Theme.of(ctx)
+                .textTheme
+                .bodyMedium
+                ?.copyWith(fontWeight: FontWeight.w600),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Đóng'),
+        ),
+      ],
+    ),
+  );
 }
 
 /// Màn hình danh sách dự án
@@ -886,6 +1116,8 @@ class ProjectListScreen extends StatelessWidget {
             onSelected: (value) async {
               if (value == 'change_password') {
                 await onChangePassword(context);
+              } else if (value == 'payment_qr') {
+                _showUserPaymentQrDialog(context, currentUser);
               } else if (value == 'logout') {
                 onLogout();
               }
@@ -894,6 +1126,10 @@ class ProjectListScreen extends StatelessWidget {
               PopupMenuItem(
                 value: 'change_password',
                 child: Text('Đổi mật khẩu'),
+              ),
+              PopupMenuItem(
+                value: 'payment_qr',
+                child: Text('Thanh toán'),
               ),
               PopupMenuItem(
                 value: 'logout',
@@ -959,13 +1195,19 @@ class ProjectListScreen extends StatelessWidget {
                                           borderRadius:
                                               BorderRadius.circular(20),
                                         ),
-                                        child: Text(
-                                          formatCurrency(balance),
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            color: balance >= 0
-                                                ? Colors.teal
-                                                : Colors.red.shade700,
+                                        child: ConstrainedBox(
+                                          constraints: const BoxConstraints(
+                                            minWidth: 0,
+                                            maxWidth: 140,
+                                          ),
+                                          child: _AmountText(
+                                            balance,
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: balance >= 0
+                                                  ? Colors.teal
+                                                  : Colors.red.shade700,
+                                            ),
                                           ),
                                         ),
                                       ),
@@ -984,18 +1226,26 @@ class ProjectListScreen extends StatelessWidget {
                                   const SizedBox(height: 10),
                                   Row(
                                     children: [
-                                      _AmountBadge(
-                                        label: 'Thu',
-                                        amount: income,
-                                        color: Colors.green,
+                                      Expanded(
+                                        child: SingleChildScrollView(
+                                          scrollDirection: Axis.horizontal,
+                                          child: Row(
+                                            children: [
+                                              _AmountBadge(
+                                                label: 'Chi',
+                                                amount: expense,
+                                                color: Colors.red,
+                                              ),
+                                              const SizedBox(width: 8),
+                                              _AmountBadge(
+                                                label: 'Thu',
+                                                amount: income,
+                                                color: Colors.green,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
                                       ),
-                                      const SizedBox(width: 8),
-                                      _AmountBadge(
-                                        label: 'Chi',
-                                        amount: expense,
-                                        color: Colors.red,
-                                      ),
-                                      const Spacer(),
                                       Icon(
                                         Icons.chevron_right_rounded,
                                         color: Colors.grey[600],
@@ -1108,10 +1358,11 @@ class _AmountBadge extends StatelessWidget {
         ),
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
             label == 'Thu' ? Icons.arrow_downward : Icons.arrow_upward,
-            size: 16,
+            size: 14,
             color: color,
           ),
           const SizedBox(width: 4),
@@ -1122,8 +1373,9 @@ class _AmountBadge extends StatelessWidget {
               color: color.darken(0.2),
             ),
           ),
-          Text(
-            formatCurrency(amount),
+          const SizedBox(width: 4),
+          _AmountText(
+            amount,
             style: TextStyle(
               fontWeight: FontWeight.w600,
               fontSize: 12,
@@ -1162,7 +1414,7 @@ class ProjectDetailScreen extends StatefulWidget {
 class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   bool _loading = true;
   List<ProjectTransaction> _transactions = [];
-  int _txTabIndex = 0; // 0 = Thu, 1 = Chi, 2 = Tất cả
+  int _txTabIndex = 0; // 0 = Chi, 1 = Thu, 2 = Tất cả
 
   double get _income => _transactions
       .where((t) => t.isIncome)
@@ -1530,19 +1782,19 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                         children: [
                           Expanded(
                             child: _OverviewTile(
-                              title: 'Thu',
-                              amount: income,
-                              color: Colors.green,
-                              icon: Icons.trending_down,
+                              title: 'Chi',
+                              amount: expense,
+                              color: Colors.red,
+                              icon: Icons.trending_up,
                             ),
                           ),
                           const SizedBox(width: 8),
                           Expanded(
                             child: _OverviewTile(
-                              title: 'Chi',
-                              amount: expense,
-                              color: Colors.red,
-                              icon: Icons.trending_up,
+                              title: 'Thu',
+                              amount: income,
+                              color: Colors.green,
+                              icon: Icons.trending_down,
                             ),
                           ),
                         ],
@@ -1565,8 +1817,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                                   balance >= 0 ? Colors.teal : Colors.red[700],
                             ),
                             const SizedBox(width: 8),
-                            const Text('Số dư hiện tại'),
-                            const Spacer(),
+                            const Text('Số dư: '),
                             Flexible(
                               child: Text(
                                 formatCurrency(balance),
@@ -1632,9 +1883,9 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                     child: Row(
                       children: [
                         _TxTabChip(
-                          label: 'Thu',
+                          label: 'Chi',
                           isSelected: _txTabIndex == 0,
-                          color: Colors.green,
+                          color: Colors.red,
                           onTap: () {
                             setState(() {
                               _txTabIndex = 0;
@@ -1642,9 +1893,9 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                           },
                         ),
                         _TxTabChip(
-                          label: 'Chi',
+                          label: 'Thu',
                           isSelected: _txTabIndex == 1,
-                          color: Colors.red,
+                          color: Colors.green,
                           onTap: () {
                             setState(() {
                               _txTabIndex = 1;
@@ -1745,20 +1996,19 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Flexible(
+                                      Flexible(
                                       child: Column(
                                         mainAxisSize: MainAxisSize.min,
                                         mainAxisAlignment: MainAxisAlignment.center,
                                         crossAxisAlignment: CrossAxisAlignment.end,
                                         children: [
-                                          Text(
-                                            '$sign${formatCurrency(tx.amount)}',
+                                          _AmountText(
+                                            tx.amount,
+                                            prefixSign: sign,
                                             style: TextStyle(
                                               fontWeight: FontWeight.w600,
                                               color: color,
                                             ),
-                                            overflow: TextOverflow.ellipsis,
-                                            maxLines: 1,
                                           ),
                                         ],
                                       ),
@@ -1788,11 +2038,14 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
 
   List<ProjectTransaction> get _filteredTransactions {
     if (_txTabIndex == 0) {
-      return _transactions.where((t) => t.isIncome).toList();
-    }
-    if (_txTabIndex == 1) {
+      // Chi
       return _transactions.where((t) => !t.isIncome).toList();
     }
+    if (_txTabIndex == 1) {
+      // Thu
+      return _transactions.where((t) => t.isIncome).toList();
+    }
+    // Tất cả
     return _transactions;
   }
 
@@ -1842,10 +2095,11 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                     ),
                     const SizedBox(height: 12),
                     ToggleButtons(
-                      isSelected: [isIncome, !isIncome],
+                      isSelected: [!isIncome, isIncome],
                       onPressed: (index) {
                         setState(() {
-                          isIncome = index == 0;
+                          // index 0 = Chi, index 1 = Thu
+                          isIncome = index == 1;
                         });
                       },
                       borderRadius: BorderRadius.circular(20),
@@ -1853,12 +2107,12 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                         Padding(
                           padding: EdgeInsets.symmetric(
                               horizontal: 16, vertical: 6),
-                          child: Text('Thu'),
+                          child: Text('Chi'),
                         ),
                         Padding(
                           padding: EdgeInsets.symmetric(
                               horizontal: 16, vertical: 6),
-                          child: Text('Chi'),
+                          child: Text('Thu'),
                         ),
                       ],
                     ),
@@ -2062,7 +2316,8 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   void _showAddTransactionSheet(BuildContext context) {
     final amountController = TextEditingController();
     final noteController = TextEditingController();
-    bool isIncome = true;
+    // Mặc định chọn Chi
+    bool isIncome = false;
     final formKey = GlobalKey<FormState>();
     Uint8List? imageBytes;
     String? imageMime;
@@ -2103,10 +2358,11 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                     ),
                     const SizedBox(height: 12),
                     ToggleButtons(
-                      isSelected: [isIncome, !isIncome],
+                      isSelected: [!isIncome, isIncome],
                       onPressed: (index) {
                         setState(() {
-                          isIncome = index == 0;
+                          // index 0 = Chi, index 1 = Thu
+                          isIncome = index == 1;
                         });
                       },
                       borderRadius: BorderRadius.circular(20),
@@ -2114,12 +2370,12 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                         Padding(
                           padding: EdgeInsets.symmetric(
                               horizontal: 16, vertical: 6),
-                          child: Text('Thu'),
+                          child: Text('Chi'),
                         ),
                         Padding(
                           padding: EdgeInsets.symmetric(
                               horizontal: 16, vertical: 6),
-                          child: Text('Chi'),
+                          child: Text('Thu'),
                         ),
                       ],
                     ),
@@ -2280,14 +2536,12 @@ class _OverviewTile extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   maxLines: 1,
                 ),
-                Text(
-                  formatCurrency(amount),
+                _AmountText(
+                  amount,
                   style: TextStyle(
                     fontWeight: FontWeight.w600,
                     color: color.darken(0.2),
                   ),
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
                 ),
               ],
             ),
@@ -2812,6 +3066,7 @@ class AppUser {
     required this.role,
     required this.isActive,
     required this.remainingDays,
+    this.paymentQrBase64,
   });
 
   final String id;
@@ -2821,6 +3076,7 @@ class AppUser {
   String role;
   bool isActive;
   int remainingDays;
+  String? paymentQrBase64;
 
   factory AppUser.fromJson(Map<String, dynamic> json) {
     return AppUser(
@@ -2831,6 +3087,7 @@ class AppUser {
       role: (json['role'] ?? 'user') as String,
       isActive: json['isActive'] as bool? ?? true,
       remainingDays: (json['remainingDays'] as num?)?.toInt() ?? 0,
+      paymentQrBase64: json['paymentQrBase64'] as String?,
     );
   }
 
@@ -2843,11 +3100,12 @@ class AppUser {
       'role': role,
       'isActive': isActive,
       'expiresInDays': remainingDays,
+      'paymentQrBase64': paymentQrBase64,
     };
   }
 }
 
-class AdminUserScreen extends StatelessWidget {
+class AdminUserScreen extends StatefulWidget {
   const AdminUserScreen({
     super.key,
     required this.users,
@@ -2857,6 +3115,8 @@ class AdminUserScreen extends StatelessWidget {
     required this.onUpdateUser,
     required this.onDeleteUser,
     required this.onExtendUser,
+    required this.onChangeUserPassword,
+    required this.onUpdateUserPaymentQr,
   });
 
   final List<AppUser> users;
@@ -2866,21 +3126,76 @@ class AdminUserScreen extends StatelessWidget {
   final Future<void> Function(AppUser user) onUpdateUser;
   final Future<void> Function(String id) onDeleteUser;
   final Future<void> Function(String userId, int addDays) onExtendUser;
+  final Future<void> Function(String userId, String newPassword)
+      onChangeUserPassword;
+  final Future<void> Function(String userId, String? paymentQrBase64)
+      onUpdateUserPaymentQr;
+
+  @override
+  State<AdminUserScreen> createState() => _AdminUserScreenState();
+}
+
+class _AdminUserScreenState extends State<AdminUserScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() {
+      setState(() {
+        _query = _searchController.text.trim().toLowerCase();
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final users = widget.users;
+    final loading = widget.loading;
+    final filteredUsers = _query.isEmpty
+        ? users
+        : users
+            .where((u) =>
+                u.name.toLowerCase().contains(_query) ||
+                u.phone.contains(_query))
+            .toList();
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Admin - Quản lý user'),
         centerTitle: true,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(60),
+          child: Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Tìm theo tên hoặc số điện thoại',
+                prefixIcon: const Icon(Icons.search),
+                isDense: true,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              ),
+            ),
+          ),
+        ),
       ),
       body: Container(
         color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.2),
         child: RefreshIndicator(
-          onRefresh: onRefresh,
+          onRefresh: widget.onRefresh,
           child: loading
               ? const Center(child: CircularProgressIndicator())
-              : users.isEmpty
+              : filteredUsers.isEmpty
                   ? ListView(
                       children: const [
                         SizedBox(height: 120),
@@ -2889,9 +3204,9 @@ class AdminUserScreen extends StatelessWidget {
                     )
                   : ListView.builder(
                       padding: const EdgeInsets.all(12),
-                      itemCount: users.length,
+                      itemCount: filteredUsers.length,
                       itemBuilder: (ctx, index) {
-                        final user = users[index];
+                        final user = filteredUsers[index];
                         final isAdmin = user.role == 'admin';
                         return Card(
                           margin: const EdgeInsets.symmetric(vertical: 6),
@@ -2965,7 +3280,7 @@ class AdminUserScreen extends StatelessWidget {
                                       ),
                                       child: Text(
                                         user.isActive
-                                            ? 'Đang hoạt động'
+                                            ? 'Active'
                                             : 'Khoá',
                                         style: TextStyle(
                                           fontSize: 11,
@@ -2991,7 +3306,7 @@ class AdminUserScreen extends StatelessWidget {
                                     isActive: !user.isActive,
                                     remainingDays: user.remainingDays,
                                   );
-                                  await onUpdateUser(updated);
+                                  await widget.onUpdateUser(updated);
                                 } else if (value == 'toggle_role') {
                                   final updated = AppUser(
                                     id: user.id,
@@ -3002,11 +3317,18 @@ class AdminUserScreen extends StatelessWidget {
                                     isActive: user.isActive,
                                     remainingDays: user.remainingDays,
                                   );
-                                  await onUpdateUser(updated);
+                                  await widget.onUpdateUser(updated);
                                 } else if (value == 'extend') {
-                                  _showExtendDialog(ctx, user, onExtendUser);
+                                  _showExtendDialog(
+                                      ctx, user, widget.onExtendUser);
+                                } else if (value == 'change_password') {
+                                  _showAdminChangePasswordDialog(ctx, user,
+                                      widget.onChangeUserPassword);
+                                } else if (value == 'payment_qr') {
+                                  _showAdminPaymentQrDialog(
+                                      ctx, user, widget.onUpdateUserPaymentQr);
                                 } else if (value == 'delete') {
-                                  await onDeleteUser(user.id);
+                                  await widget.onDeleteUser(user.id);
                                 }
                               },
                               itemBuilder: (ctx) => [
@@ -3029,6 +3351,26 @@ class AdminUserScreen extends StatelessWidget {
                                       Icon(Icons.date_range, size: 20),
                                       SizedBox(width: 8),
                                       Text('Gia hạn sử dụng'),
+                                    ],
+                                  ),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'payment_qr',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.qr_code, size: 20),
+                                      SizedBox(width: 8),
+                                      Text('Mã QR thanh toán'),
+                                    ],
+                                  ),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'change_password',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.lock_reset, size: 20),
+                                      SizedBox(width: 8),
+                                      Text('Đổi mật khẩu'),
                                     ],
                                   ),
                                 ),
@@ -3113,6 +3455,124 @@ class AdminUserScreen extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+
+  static void _showAdminChangePasswordDialog(
+    BuildContext context,
+    AppUser user,
+    Future<void> Function(String userId, String newPassword)
+        onChangeUserPassword,
+  ) {
+    final passwordController = TextEditingController();
+    final confirmController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    bool loading = false;
+    String? error;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: const Text('Đổi mật khẩu user'),
+              content: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'User: ${user.name} (${user.phone.isNotEmpty ? user.phone : user.email})',
+                      style: Theme.of(ctx).textTheme.bodyMedium,
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: passwordController,
+                      decoration: const InputDecoration(
+                        labelText: 'Mật khẩu mới',
+                        prefixIcon: Icon(Icons.lock_outline),
+                      ),
+                      obscureText: true,
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty) {
+                          return 'Vui lòng nhập mật khẩu mới';
+                        }
+                        if (value.trim().length < 6) {
+                          return 'Mật khẩu tối thiểu 6 ký tự';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      controller: confirmController,
+                      decoration: const InputDecoration(
+                        labelText: 'Nhập lại mật khẩu',
+                        prefixIcon: Icon(Icons.lock_reset),
+                      ),
+                      obscureText: true,
+                      validator: (value) {
+                        if (value != passwordController.text) {
+                          return 'Mật khẩu nhập lại không khớp';
+                        }
+                        return null;
+                      },
+                    ),
+                    if (error != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        error!,
+                        style: const TextStyle(
+                            color: Colors.red, fontSize: 12),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: loading ? null : () => Navigator.of(ctx).pop(),
+                  child: const Text('Hủy'),
+                ),
+                FilledButton(
+                  onPressed: loading
+                      ? null
+                      : () async {
+                          if (!formKey.currentState!.validate()) return;
+                          setState(() {
+                            loading = true;
+                            error = null;
+                          });
+                          try {
+                            await onChangeUserPassword(
+                              user.id,
+                              passwordController.text.trim(),
+                            );
+                            Navigator.of(ctx).pop();
+                          } catch (_) {
+                            setState(() {
+                              error = 'Không thể đổi mật khẩu. Thử lại sau.';
+                              loading = false;
+                            });
+                          }
+                        },
+                  child: loading
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Lưu'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -3225,7 +3685,7 @@ class AdminUserScreen extends StatelessWidget {
                 isActive: true,
                 remainingDays: 30,
               );
-              await onAddUser(user);
+              await widget.onAddUser(user);
               if (context.mounted) {
                 Navigator.of(ctx).pop();
               }
@@ -3234,6 +3694,142 @@ class AdminUserScreen extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+
+  static void _showAdminPaymentQrDialog(
+    BuildContext context,
+    AppUser user,
+    Future<void> Function(String userId, String? paymentQrBase64)
+        onUpdateUserPaymentQr,
+  ) {
+    Uint8List? imageBytes =
+        user.paymentQrBase64 != null ? base64Decode(user.paymentQrBase64!) : null;
+    String? imageMime;
+    bool loading = false;
+    String? error;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: const Text('Mã QR thanh toán'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'User: ${user.name} (${user.phone.isNotEmpty ? user.phone : user.email})',
+                    style: Theme.of(ctx).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 12),
+                  if (imageBytes != null) ...[
+                    Center(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(
+                          imageBytes!,
+                          height: 180,
+                          width: 180,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  TextButton.icon(
+                    onPressed: loading
+                        ? null
+                        : () async {
+                            final result = await FilePicker.platform.pickFiles(
+                              type: FileType.image,
+                              withData: true,
+                            );
+                            if (result != null &&
+                                result.files.isNotEmpty &&
+                                result.files.first.bytes != null) {
+                              setState(() {
+                                imageBytes = result.files.first.bytes;
+                                imageMime = result.files.first.extension;
+                                error = null;
+                              });
+                            }
+                          },
+                    icon: const Icon(Icons.upload_file),
+                    label: const Text('Chọn ảnh QR từ máy'),
+                  ),
+                  if (imageBytes != null)
+                    TextButton.icon(
+                      onPressed: loading
+                          ? null
+                          : () {
+                              setState(() {
+                                imageBytes = null;
+                                imageMime = null;
+                              });
+                            },
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                      label: const Text(
+                        'Xoá mã QR hiện tại',
+                        style: TextStyle(color: Colors.red),
+                      ),
+                    ),
+                  if (error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      error!,
+                      style:
+                          const TextStyle(color: Colors.red, fontSize: 12),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: loading ? null : () => Navigator.of(ctx).pop(),
+                  child: const Text('Hủy'),
+                ),
+                FilledButton(
+                  onPressed: loading
+                      ? null
+                      : () async {
+                          setState(() {
+                            loading = true;
+                            error = null;
+                          });
+                          try {
+                            final base64 = imageBytes != null
+                                ? base64Encode(imageBytes!)
+                                : null;
+                            await onUpdateUserPaymentQr(user.id, base64);
+                            if (context.mounted) {
+                              Navigator.of(ctx).pop();
+                            }
+                          } catch (_) {
+                            setState(() {
+                              error =
+                                  'Không thể lưu mã QR. Vui lòng thử lại sau.';
+                              loading = false;
+                            });
+                          }
+                        },
+                  child: loading
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Lưu'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 }
