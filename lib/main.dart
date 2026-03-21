@@ -2398,7 +2398,26 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
       );
     } catch (_) {}
 
-    // Legacy path (nếu dự án có thư mục static của Roboto).
+    // Ưu tiên bộ Roboto Condensed trong thư mục static.
+    try {
+      final regular =
+          await rootBundle.load('assets/fonts/Roboto/static/Roboto_Condensed-Regular.ttf');
+      final bold =
+          await rootBundle.load('assets/fonts/Roboto/static/Roboto_Condensed-Bold.ttf');
+      final italic =
+          await rootBundle.load('assets/fonts/Roboto/static/Roboto_Condensed-Italic.ttf');
+      final boldItalic = await rootBundle
+          .load('assets/fonts/Roboto/static/Roboto_Condensed-BoldItalic.ttf');
+
+      return pw.ThemeData.withFont(
+        base: pw.Font.ttf(regular),
+        bold: pw.Font.ttf(bold),
+        italic: pw.Font.ttf(italic),
+        boldItalic: pw.Font.ttf(boldItalic),
+      );
+    } catch (_) {}
+
+    // Legacy path (nếu dự án có bộ Roboto thường trong thư mục static).
     try {
       final regular =
           await rootBundle.load('assets/fonts/Roboto/static/Roboto-Regular.ttf');
