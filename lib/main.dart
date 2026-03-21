@@ -1590,7 +1590,6 @@ Future<void> _showUserPaymentQrDialog(BuildContext context, AppUser user) async 
         mainAxisSize: MainAxisSize.min,
         children: [
           ClipRRect(
-          ClipRRect(
             borderRadius: BorderRadius.circular(16),
             child: Image.memory(
               bytes,
@@ -1834,6 +1833,16 @@ class ProjectListScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final sortedProjects = List<Project>.from(projects)
+      ..sort((a, b) {
+        final aAt = a.createdAt;
+        final bAt = b.createdAt;
+        if (aAt == null && bAt == null) return 0;
+        if (aAt == null) return 1;
+        if (bAt == null) return -1;
+        return bAt.compareTo(aAt);
+      });
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Quản lý dự án'),
@@ -1953,13 +1962,13 @@ class ProjectListScreen extends StatelessWidget {
           onRefresh: onRefresh,
           child: loading
               ? const Center(child: CircularProgressIndicator())
-              : projects.isEmpty
+              : sortedProjects.isEmpty
                   ? const _EmptyProjectsView()
                   : ListView.builder(
                       padding: const EdgeInsets.all(12),
-                      itemCount: projects.length,
+                      itemCount: sortedProjects.length,
                       itemBuilder: (ctx, index) {
-                        final project = projects[index];
+                        final project = sortedProjects[index];
                         final income = project.totalIncome;
                         final expense = project.totalExpense;
                         final balance = project.balance;
@@ -2795,8 +2804,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                           ),
                           itemCount: _filteredTransactions.length,
                           itemBuilder: (ctx, index) {
-                            final tx = _filteredTransactions[
-                                _filteredTransactions.length - 1 - index];
+                            final tx = _filteredTransactions[index];
                             final color =
                                 tx.isIncome ? Colors.green : Colors.red.shade700;
                             final sign = tx.isIncome ? '+' : '-';
@@ -2902,16 +2910,16 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   }
 
   List<ProjectTransaction> get _filteredTransactions {
+    List<ProjectTransaction> list;
     if (_txTabIndex == 0) {
-      // Chi
-      return _transactions.where((t) => !t.isIncome).toList();
+      list = _transactions.where((t) => !t.isIncome).toList();
+    } else if (_txTabIndex == 1) {
+      list = _transactions.where((t) => t.isIncome).toList();
+    } else {
+      list = List<ProjectTransaction>.from(_transactions);
     }
-    if (_txTabIndex == 1) {
-      // Thu
-      return _transactions.where((t) => t.isIncome).toList();
-    }
-    // Tất cả
-    return _transactions;
+    list.sort((a, b) => b.date.compareTo(a.date));
+    return list;
   }
 
   void _showEditTransactionSheet(ProjectTransaction tx) {
