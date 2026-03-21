@@ -35,6 +35,8 @@ RUN chmod +x /start.sh /usr/local/bin/duan1-server
 EXPOSE 80
 
 ENV BACKEND_PORT=8080
-ENV MONGO_URI=mongodb://mongo:27017/duan1
+# Không cố định host MongoDB trong Dockerfile.
+# Trên CapRover, bạn cần set `MONGO_URI` theo đúng tên service nội bộ của app MongoDB.
+# Nếu không set, server sẽ fallback về `mongodb://localhost:27017/duan1`.
 
 CMD ["/start.sh"]
