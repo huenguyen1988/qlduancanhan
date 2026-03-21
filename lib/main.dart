@@ -2317,6 +2317,10 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
       );
     } catch (_) {}
 
+    // Trên web mobile, PdfGoogleFonts đôi khi gây lỗi JS `DataView.getUint32`.
+    // Bỏ fallback này trên web để tránh crash khi xuất PDF.
+    if (kIsWeb) return null;
+
     // Fallback Unicode font (covers Vietnamese very well).
     try {
       final base = await PdfGoogleFonts.notoSansRegular();
@@ -2462,13 +2466,24 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
 
   Future<void> _exportProjectToPdf() async {
     pw.ThemeData? theme;
+    Uint8List bytes;
     try {
       theme = await _loadPdfTheme();
-    } catch (_) {}
-
-    // Always keep Vietnamese labels. If font loading fails, the PDF still
-    // exports, but labels remain in Vietnamese instead of degrading to ASCII.
-    final bytes = await _buildPdfBytes(theme, useVietnameseLabels: true);
+      // Always keep Vietnamese labels. If font loading fails, the PDF still
+      // exports, but labels remain in Vietnamese instead of degrading to ASCII.
+      bytes = await _buildPdfBytes(theme, useVietnameseLabels: true);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Không thể tạo file PDF trên thiết bị/trình duyệt này. Vui lòng thử lại hoặc đổi trình duyệt.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
 
     final name = 'du-an-${widget.project.name.replaceAll(RegExp(r'[^\w\s-]'), '').replaceAll(' ', '_')}.pdf';
     if (!mounted) return;
