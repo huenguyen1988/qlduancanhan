@@ -2464,6 +2464,69 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     return doc.save();
   }
 
+  String _pdfSafeText(String input) {
+    // Tránh ký tự control làm hỏng render PDF trên một số thiết bị/trình duyệt.
+    return input
+        .replaceAll('\r', ' ')
+        .replaceAll('\n', ' ')
+        .replaceAll('\t', ' ')
+        .trim();
+  }
+
+  Future<Uint8List> _buildPdfBytesSimpleFallback() {
+    final doc = pw.Document();
+    doc.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(24),
+        build: (pw.Context context) {
+          final rows = <pw.Widget>[
+            pw.Text(
+              _pdfSafeText(widget.project.name),
+              style: pw.TextStyle(
+                fontSize: 16,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+            pw.SizedBox(height: 6),
+            if (widget.project.description.isNotEmpty)
+              pw.Text(
+                _pdfSafeText(widget.project.description),
+                style: const pw.TextStyle(fontSize: 10),
+              ),
+            pw.SizedBox(height: 12),
+            pw.Text('Tong thu: ${formatCurrency(_income)}'),
+            pw.Text('Tong chi: ${formatCurrency(_expense)}'),
+            pw.Text('So du: ${formatCurrency(_balance)}'),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              'Danh sach giao dich',
+              style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+            ),
+            pw.SizedBox(height: 6),
+          ];
+
+          final sorted = List<ProjectTransaction>.from(_transactions)
+            ..sort((a, b) => b.date.compareTo(a.date));
+          for (final t in sorted) {
+            final note = _pdfSafeText(
+              t.note.isEmpty ? (t.isIncome ? 'Thu' : 'Chi') : t.note,
+            );
+            rows.add(
+              pw.Text(
+                '${formatDate(t.date)} | ${t.isIncome ? 'Thu' : 'Chi'} | $note | ${t.isIncome ? '+' : '-'}${formatCurrency(t.amount)}',
+                style: const pw.TextStyle(fontSize: 9),
+              ),
+            );
+            rows.add(pw.SizedBox(height: 2));
+          }
+          return rows;
+        },
+      ),
+    );
+    return doc.save();
+  }
+
   Future<void> _exportProjectToPdf() async {
     pw.ThemeData? theme;
     Uint8List bytes;
@@ -2473,16 +2536,21 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
       // exports, but labels remain in Vietnamese instead of degrading to ASCII.
       bytes = await _buildPdfBytes(theme, useVietnameseLabels: true);
     } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Không thể tạo file PDF trên thiết bị/trình duyệt này. Vui lòng thử lại hoặc đổi trình duyệt.',
+      try {
+        // Fallback an toàn: PDF đơn giản để luôn có file tải về/in được.
+        bytes = await _buildPdfBytesSimpleFallback();
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Không thể tạo file PDF trên thiết bị/trình duyệt này. Vui lòng thử lại hoặc đổi trình duyệt.',
+              ),
             ),
-          ),
-        );
+          );
+        }
+        return;
       }
-      return;
     }
 
     final name = 'du-an-${widget.project.name.replaceAll(RegExp(r'[^\w\s-]'), '').replaceAll(' ', '_')}.pdf';
