@@ -499,6 +499,17 @@ Future<void> main(List<String> args) async {
     );
   });
 
+  app.delete('/api/projects/<projectId>/transactions/<txId>',
+      (Request req, String projectId, String txId) async {
+    await transactionsColl.remove(
+      mongo.where.eq('_id', txId).eq('projectId', projectId),
+    );
+    return Response.ok(
+      jsonEncode({'success': true}),
+      headers: {'content-type': 'application/json'},
+    );
+  });
+
   // ---- Project diary / notes ----
 
   app.get('/api/projects/<id>/notes', (Request req, String id) async {

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -246,6 +247,17 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
           'imageBase64': tx.imageBase64,
           'imageContentType': tx.imageContentType,
         }),
+      );
+      if (res.statusCode == 200) {
+        await _fetchProjects();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _deleteTransaction(String projectId, String txId) async {
+    try {
+      final res = await http.delete(
+        Uri.parse('$apiBaseUrl/api/projects/$projectId/transactions/$txId'),
       );
       if (res.statusCode == 200) {
         await _fetchProjects();
@@ -823,6 +835,8 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                                                   _addTransaction,
                                               onUpdateTransaction:
                                                   _updateTransaction,
+                                              onDeleteTransaction:
+                                                  _deleteTransaction,
                                               onDeleteProject: _deleteProject,
                                             ),
                                           ),
@@ -900,6 +914,8 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                                           onAddTransaction: _addTransaction,
                                           onUpdateTransaction:
                                               _updateTransaction,
+                                          onDeleteTransaction:
+                                              _deleteTransaction,
                                           onDeleteProject: _deleteProject,
                                         ),
                                       ),
@@ -2233,6 +2249,7 @@ class ProjectDetailScreen extends StatefulWidget {
     required this.onUpdateProject,
     required this.onAddTransaction,
     required this.onUpdateTransaction,
+    required this.onDeleteTransaction,
     required this.onDeleteProject,
   });
 
@@ -2242,6 +2259,8 @@ class ProjectDetailScreen extends StatefulWidget {
       onAddTransaction;
   final Future<void> Function(String projectId, ProjectTransaction)
       onUpdateTransaction;
+  final Future<void> Function(String projectId, String txId)
+      onDeleteTransaction;
   final Future<void> Function(String projectId) onDeleteProject;
 
   @override
@@ -2262,6 +2281,71 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
       .fold(0.0, (sum, t) => sum + t.amount);
 
   double get _balance => _income - _expense;
+
+  Future<void> _deleteTransactionWithConfirm(ProjectTransaction tx) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Xóa giao dịch'),
+        content: const Text('Bạn có chắc muốn xóa khoản thu/chi này không?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Hủy'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Xóa'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await widget.onDeleteTransaction(widget.project.id, tx.id);
+    await _loadTransactions();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Đã xóa giao dịch')),
+    );
+  }
+
+  Future<void> _saveNewTransactionInBackground(ProjectTransaction tx) async {
+    try {
+      await widget.onAddTransaction(widget.project.id, tx);
+      await _loadTransactions();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Đã lưu giao dịch')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Không thể lưu giao dịch. Vui lòng thử lại.'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _saveUpdatedTransactionInBackground(
+    ProjectTransaction updated,
+  ) async {
+    try {
+      await widget.onUpdateTransaction(widget.project.id, updated);
+      await _loadTransactions();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Đã cập nhật giao dịch')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Không thể cập nhật giao dịch. Vui lòng thử lại.'),
+        ),
+      );
+    }
+  }
 
   @override
   void initState() {
@@ -2299,6 +2383,22 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   }
 
   Future<pw.ThemeData?> _loadPdfTheme() async {
+    try {
+      final regular = await rootBundle.load('assets/fonts/Roboto-Regular.ttf');
+      final bold = await rootBundle.load('assets/fonts/Roboto-Bold.ttf');
+      final italic = await rootBundle.load('assets/fonts/Roboto-Italic.ttf');
+      final boldItalic =
+          await rootBundle.load('assets/fonts/Roboto-BoldItalic.ttf');
+
+      return pw.ThemeData.withFont(
+        base: pw.Font.ttf(regular),
+        bold: pw.Font.ttf(bold),
+        italic: pw.Font.ttf(italic),
+        boldItalic: pw.Font.ttf(boldItalic),
+      );
+    } catch (_) {}
+
+    // Legacy path (nếu dự án có thư mục static của Roboto).
     try {
       final regular =
           await rootBundle.load('assets/fonts/Roboto/static/Roboto-Regular.ttf');
@@ -2473,12 +2573,32 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
         .trim();
   }
 
-  Future<Uint8List> _buildPdfBytesSimpleFallback() {
+  String _formatCurrencyForPdf(double amount, {bool prefixSign = false}) {
+    final abs = formatCurrency(amount.abs()).replaceAll(' đ', ' VND');
+    if (!prefixSign) return abs;
+    return '${amount >= 0 ? '+' : '-'}$abs';
+  }
+
+  Future<Uint8List> _buildPdfBytesSimpleFallback({
+    pw.ThemeData? theme,
+    required bool useVietnameseLabels,
+  }) {
     final doc = pw.Document();
+    final sTongQuan = useVietnameseLabels ? 'Tổng quan' : 'Tong quan';
+    final sTongThu = useVietnameseLabels ? 'Tổng thu' : 'Tong thu';
+    final sTongChi = useVietnameseLabels ? 'Tổng chi' : 'Tong chi';
+    final sSoDu = useVietnameseLabels ? 'Số dư' : 'So du';
+    final sDanhSach = useVietnameseLabels ? 'Danh sách giao dịch' : 'Danh sach giao dich';
+    final sNgay = useVietnameseLabels ? 'Ngày' : 'Ngay';
+    final sLoai = useVietnameseLabels ? 'Loại' : 'Loai';
+    final sNoiDung = useVietnameseLabels ? 'Nội dung' : 'Noi dung';
+    final sSoTien = useVietnameseLabels ? 'Số tiền' : 'So tien';
+
     doc.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
         margin: const pw.EdgeInsets.all(24),
+        theme: theme,
         build: (pw.Context context) {
           final rows = <pw.Widget>[
             pw.Text(
@@ -2495,12 +2615,32 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                 style: const pw.TextStyle(fontSize: 10),
               ),
             pw.SizedBox(height: 12),
-            pw.Text('Tong thu: ${formatCurrency(_income)}'),
-            pw.Text('Tong chi: ${formatCurrency(_expense)}'),
-            pw.Text('So du: ${formatCurrency(_balance)}'),
+            pw.Text(
+              sTongQuan,
+              style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12),
+            ),
+            pw.SizedBox(height: 6),
+            pw.Container(
+              padding: const pw.EdgeInsets.all(8),
+              decoration: pw.BoxDecoration(
+                border: pw.Border.all(color: PdfColors.grey400, width: 0.5),
+                borderRadius: pw.BorderRadius.circular(6),
+              ),
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text('$sTongThu: ${_formatCurrencyForPdf(_income)}'),
+                  pw.Text('$sTongChi: ${_formatCurrencyForPdf(_expense)}'),
+                  pw.Text(
+                    '$sSoDu: ${_formatCurrencyForPdf(_balance)}',
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
             pw.SizedBox(height: 12),
             pw.Text(
-              'Danh sach giao dich',
+              sDanhSach,
               style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
             ),
             pw.SizedBox(height: 6),
@@ -2508,18 +2648,89 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
 
           final sorted = List<ProjectTransaction>.from(_transactions)
             ..sort((a, b) => b.date.compareTo(a.date));
-          for (final t in sorted) {
-            final note = _pdfSafeText(
-              t.note.isEmpty ? (t.isIncome ? 'Thu' : 'Chi') : t.note,
-            );
-            rows.add(
-              pw.Text(
-                '${formatDate(t.date)} | ${t.isIncome ? 'Thu' : 'Chi'} | $note | ${t.isIncome ? '+' : '-'}${formatCurrency(t.amount)}',
-                style: const pw.TextStyle(fontSize: 9),
-              ),
-            );
-            rows.add(pw.SizedBox(height: 2));
-          }
+          rows.add(
+            pw.Table(
+              border: pw.TableBorder.all(width: 0.5, color: PdfColors.grey500),
+              columnWidths: {
+                0: const pw.FlexColumnWidth(2),
+                1: const pw.FlexColumnWidth(1.2),
+                2: const pw.FlexColumnWidth(3),
+                3: const pw.FlexColumnWidth(2),
+              },
+              children: [
+                pw.TableRow(
+                  decoration: const pw.BoxDecoration(color: PdfColors.grey300),
+                  children: [
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.all(4),
+                      child: pw.Text(
+                        sNgay,
+                        style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
+                      ),
+                    ),
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.all(4),
+                      child: pw.Text(
+                        sLoai,
+                        style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
+                      ),
+                    ),
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.all(4),
+                      child: pw.Text(
+                        sNoiDung,
+                        style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
+                      ),
+                    ),
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.all(4),
+                      child: pw.Align(
+                        alignment: pw.Alignment.centerRight,
+                        child: pw.Text(
+                          sSoTien,
+                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 9),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                ...sorted.map((t) {
+                  final note = _pdfSafeText(
+                    t.note.isEmpty ? (t.isIncome ? 'Thu' : 'Chi') : t.note,
+                  );
+                  return pw.TableRow(
+                    children: [
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(4),
+                        child: pw.Text(formatDate(t.date), style: const pw.TextStyle(fontSize: 9)),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(4),
+                        child: pw.Text(t.isIncome ? 'Thu' : 'Chi', style: const pw.TextStyle(fontSize: 9)),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(4),
+                        child: pw.Text(note, style: const pw.TextStyle(fontSize: 9)),
+                      ),
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.all(4),
+                        child: pw.Align(
+                          alignment: pw.Alignment.centerRight,
+                          child: pw.Text(
+                            _formatCurrencyForPdf(
+                              t.isIncome ? t.amount : -t.amount,
+                              prefixSign: true,
+                            ),
+                            style: const pw.TextStyle(fontSize: 9),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                }),
+              ],
+            ),
+          );
           return rows;
         },
       ),
@@ -2532,13 +2743,18 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     Uint8List bytes;
     try {
       theme = await _loadPdfTheme();
-      // Always keep Vietnamese labels. If font loading fails, the PDF still
-      // exports, but labels remain in Vietnamese instead of degrading to ASCII.
-      bytes = await _buildPdfBytes(theme, useVietnameseLabels: true);
+      // Nếu không có Unicode font trên web, dùng nhãn ASCII để tránh lỗi glyph.
+      bytes = await _buildPdfBytes(
+        theme,
+        useVietnameseLabels: theme != null,
+      );
     } catch (_) {
       try {
         // Fallback an toàn: PDF đơn giản để luôn có file tải về/in được.
-        bytes = await _buildPdfBytesSimpleFallback();
+        bytes = await _buildPdfBytesSimpleFallback(
+          theme: theme,
+          useVietnameseLabels: !kIsWeb || theme != null,
+        );
       } catch (_) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -2945,27 +3161,38 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                      Flexible(
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        crossAxisAlignment: CrossAxisAlignment.end,
-                                        children: [
-                                          _AmountText(
-                                            tx.amount,
-                                            prefixSign: sign,
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.w600,
-                                              color: color,
-                                            ),
+                                    Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.end,
+                                      children: [
+                                        _AmountText(
+                                          tx.amount,
+                                          prefixSign: sign,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w600,
+                                            color: color,
                                           ),
-                                        ],
-                                      ),
+                                        ),
+                                      ],
                                     ),
                                     if (trailing != null) ...[
                                       const SizedBox(width: 8),
                                       trailing,
                                     ],
+                                    const SizedBox(width: 4),
+                                    IconButton(
+                                      tooltip: 'Xóa giao dịch',
+                                      onPressed: () {
+                                        _deleteTransactionWithConfirm(tx);
+                                      },
+                                      icon: const Icon(
+                                        Icons.delete_outline,
+                                        color: Colors.red,
+                                      ),
+                                    ),
                                   ],
                                 ),
                               ),
@@ -3187,12 +3414,10 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                                   : null,
                               imageContentType: imageMime,
                             );
-                            await widget.onUpdateTransaction(
-                              widget.project.id,
-                              updated,
-                            );
-                            await _loadTransactions();
                             Navigator.of(ctx).pop();
+                            unawaited(
+                              _saveUpdatedTransactionInBackground(updated),
+                            );
                           },
                           child: const Text('Lưu'),
                         ),
@@ -3448,9 +3673,8 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                                   : null,
                               imageContentType: imageMime,
                             );
-                            await widget.onAddTransaction(widget.project.id, tx);
-                            await _loadTransactions();
                             Navigator.of(ctx).pop();
+                            unawaited(_saveNewTransactionInBackground(tx));
                           },
                           child: const Text('Lưu'),
                         ),
