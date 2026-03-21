@@ -1,0 +1,23 @@
+.git
+.gitignore
+.dart_tool
+build
+**/build
+**/.dart_tool
+*.iml
+.idea
+.vscode
+
+android
+ios
+linux
+macos
+windows
+test
+
+# Cursor / local
+terminals
+
+# Server artifacts (build lại trong image)
+server/.dart_tool
+server/build

@@ -15,7 +15,18 @@ import 'package:printing/printing.dart';
 
 import 'backup_download.dart' as backup_dl;
 
-const String apiBaseUrl = 'http://localhost:8080';
+/// Gốc API. Trên web (Docker/CapRover): cùng origin → nginx proxy `/api` sang backend.
+/// Mobile/desktop: `API_BASE_URL` khi build, mặc định localhost.
+String get apiBaseUrl {
+  if (kIsWeb) {
+    return Uri.base.origin;
+  }
+  const fromEnv = String.fromEnvironment('API_BASE_URL', defaultValue: '');
+  if (fromEnv.isNotEmpty) {
+    return fromEnv.replaceAll(RegExp(r'/$'), '');
+  }
+  return 'http://localhost:8080';
+}
 
 /// Chuyển mã lỗi API (snake_case) sang thông báo tiếng Việt.
 String apiErrorToVietnamese(Object? raw) {
