@@ -2493,26 +2493,19 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                 onPressed: () async {
                   Navigator.pop(ctx);
                   if (kIsWeb) {
-                    try {
-                      await Printing.layoutPdf(
-                        onLayout: (_) async => bytes,
-                        name: name,
-                      );
-                    } catch (_) {
-                      backup_dl.downloadBytesFileOnWeb(
-                        name,
-                        bytes,
-                        mimeType: 'application/pdf',
-                      );
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'Trình duyệt này không hỗ trợ in trực tiếp. Đã tải file PDF về máy.',
-                            ),
+                    backup_dl.downloadBytesFileOnWeb(
+                      name,
+                      bytes,
+                      mimeType: 'application/pdf',
+                    );
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Đã tải file PDF. Mở file và dùng Ctrl+P (hoặc menu in) để in.',
                           ),
-                        );
-                      }
+                        ),
+                      );
                     }
                   } else {
                     await Printing.layoutPdf(
@@ -2522,7 +2515,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                   }
                 },
                 icon: const Icon(Icons.print_outlined),
-                label: const Text('In / Lưu thành PDF'),
+                label: Text(kIsWeb ? 'Tải file PDF (để in)' : 'In / Lưu thành PDF'),
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
