@@ -8,6 +8,18 @@ import 'package:shelf/shelf_io.dart' as io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_cors_headers/shelf_cors_headers.dart';
 
+/// QR thanh toán dùng chung: lấy từ bất kỳ user nào đã có `paymentQrBase64`.
+Future<String?> _firstPaymentQrFromUsers(mongo.DbCollection usersColl) async {
+  final users = await usersColl.find().toList();
+  for (final u in users) {
+    final raw = u['paymentQrBase64'];
+    if (raw == null) continue;
+    final qr = raw.toString().trim();
+    if (qr.isNotEmpty) return qr;
+  }
+  return null;
+}
+
 Future<void> main(List<String> args) async {
   final mongoUri =
       Platform.environment['MONGO_URI'] ?? 'mongodb://localhost:27017/duan1';
@@ -76,6 +88,16 @@ Future<void> main(List<String> args) async {
 
     await usersColl.insert(userDoc);
 
+    // User mới: gán QR chung nếu hệ thống đã có (tránh user đăng ký sau không có mã).
+    final sharedQr = await _firstPaymentQrFromUsers(usersColl);
+    if (sharedQr != null) {
+      await usersColl.update(
+        whereId(id),
+        {r'$set': {'paymentQrBase64': sharedQr}},
+      );
+      userDoc['paymentQrBase64'] = sharedQr;
+    }
+
     final json = _userToJson(userDoc);
     return Response.ok(
       jsonEncode(json),
@@ -133,7 +155,19 @@ Future<void> main(List<String> args) async {
       );
     }
 
-    final json = _userToJson(user);
+    final qrExisting = user['paymentQrBase64']?.toString().trim() ?? '';
+    if (qrExisting.isEmpty) {
+      final sharedQr = await _firstPaymentQrFromUsers(usersColl);
+      if (sharedQr != null) {
+        await usersColl.update(
+          whereId(user['_id']),
+          {r'$set': {'paymentQrBase64': sharedQr}},
+        );
+      }
+    }
+
+    final fresh = await usersColl.findOne({'phone': phone});
+    final json = _userToJson(fresh ?? user);
     return Response.ok(
       jsonEncode(json),
       headers: {'content-type': 'application/json'},
@@ -248,20 +282,9 @@ Future<void> main(List<String> args) async {
 
   /// Mã QR thanh toán dùng chung — không cần đăng nhập (vd: user hết hạn vẫn xem được).
   app.get('/api/payment-qr', (Request req) async {
-    final users = await usersColl.find().toList();
-    for (final u in users) {
-      final raw = u['paymentQrBase64'];
-      if (raw == null) continue;
-      final qr = raw.toString().trim();
-      if (qr.isNotEmpty) {
-        return Response.ok(
-          jsonEncode({'paymentQrBase64': qr}),
-          headers: {'content-type': 'application/json'},
-        );
-      }
-    }
+    final qr = await _firstPaymentQrFromUsers(usersColl);
     return Response.ok(
-      jsonEncode({'paymentQrBase64': null}),
+      jsonEncode({'paymentQrBase64': qr}),
       headers: {'content-type': 'application/json'},
     );
   });
@@ -296,6 +319,9 @@ Future<void> main(List<String> args) async {
         'ownerPhone': p['ownerPhone'] ?? '',
         'totalIncome': income,
         'totalExpense': expense,
+        if (p['createdAt'] != null)
+          'createdAt':
+              (p['createdAt'] as DateTime).toUtc().toIso8601String(),
       });
     }
 
@@ -309,11 +335,13 @@ Future<void> main(List<String> args) async {
     final body = await req.readAsString();
     final data = jsonDecode(body) as Map<String, dynamic>;
     final id = 'p_${DateTime.now().microsecondsSinceEpoch}';
+    final createdAt = DateTime.now().toUtc();
 
     final doc = {
       '_id': id,
       'name': data['name'],
       'description': data['description'] ?? '',
+      'createdAt': createdAt,
       if (data['ownerPhone'] != null)
         'ownerPhone': (data['ownerPhone'] as String).trim(),
     };
@@ -328,6 +356,7 @@ Future<void> main(List<String> args) async {
         'ownerPhone': doc['ownerPhone'] ?? '',
         'totalIncome': 0,
         'totalExpense': 0,
+        'createdAt': createdAt.toIso8601String(),
       }),
       headers: {'content-type': 'application/json'},
     );
@@ -580,6 +609,9 @@ Future<void> main(List<String> args) async {
         'name': p['name'],
         'description': p['description'] ?? '',
         'ownerPhone': p['ownerPhone'] ?? '',
+        if (p['createdAt'] != null)
+          'createdAt':
+              (p['createdAt'] as DateTime).toUtc().toIso8601String(),
         'transactions': txs.map((t) {
           return {
             'id': t['_id'],
@@ -652,6 +684,15 @@ Future<void> main(List<String> args) async {
     };
 
     await usersColl.insert(userDoc);
+
+    final sharedQr = await _firstPaymentQrFromUsers(usersColl);
+    if (sharedQr != null) {
+      await usersColl.update(
+        whereId(id),
+        {r'$set': {'paymentQrBase64': sharedQr}},
+      );
+      userDoc['paymentQrBase64'] = sharedQr;
+    }
 
     return Response.ok(
       jsonEncode(_userToJson(userDoc)),
@@ -781,6 +822,7 @@ Future<void> _seedIfEmpty({
       '_id': projectId,
       'name': 'Dự án mẫu',
       'description': 'Dự án demo có sẵn dữ liệu thu chi',
+      'createdAt': DateTime.now().toUtc(),
     });
 
     await transactionsColl.insertMany([

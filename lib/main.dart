@@ -4,7 +4,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart'
+    show rootBundle, TextInputFormatter, TextEditingValue, TextSelection;
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:share_plus/share_plus.dart';
@@ -792,7 +793,7 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                                     await _refreshCurrentUser();
                                     final user = _currentUser;
                                     if (user != null) {
-                                      _showUserPaymentQrDialog(ctx, user);
+                                      await _showUserPaymentQrDialog(ctx, user);
                                     }
                                   },
                                   onBackupData: _showBackupDataDialog,
@@ -870,7 +871,7 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                                 await _refreshCurrentUser();
                                 final user = _currentUser;
                                 if (user != null) {
-                                  _showUserPaymentQrDialog(ctx, user);
+                                  await _showUserPaymentQrDialog(ctx, user);
                                 }
                               },
                               onBackupData: _showBackupDataDialog,
@@ -1053,6 +1054,34 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                  // Logo: không dùng Container/BoxDecoration/màu nền — chỉ ảnh trên nền Scaffold.
+                  Material(
+                    type: MaterialType.transparency,
+                    elevation: 0,
+                    color: Colors.transparent,
+                    shadowColor: Colors.transparent,
+                    surfaceTintColor: Colors.transparent,
+                    child: Builder(
+                      builder: (ctx) {
+                        final dpr = MediaQuery.devicePixelRatioOf(ctx);
+                        // Chiều cao logic lớn hơn + decode theo pixel thật → nét hơn trên màn HDPI.
+                        const logicalLogoHeight = 168.0;
+                        final cacheH =
+                            (logicalLogoHeight * dpr).round().clamp(1, 8192);
+                        return SizedBox(
+                          width: double.infinity,
+                          height: logicalLogoHeight,
+                          child: Image.asset(
+                            'assets/logo/logo.png',
+                            fit: BoxFit.contain,
+                            alignment: Alignment.center,
+                            filterQuality: FilterQuality.high,
+                            cacheHeight: cacheH,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
                   const SizedBox(height: 20),
                   Text(
                     'Quản lý thu chi dự án',
@@ -1235,6 +1264,7 @@ class Project {
     this.ownerPhone = '',
     this.totalIncome = 0,
     this.totalExpense = 0,
+    this.createdAt,
   });
 
   final String id;
@@ -1243,8 +1273,15 @@ class Project {
   String ownerPhone;
   double totalIncome;
   double totalExpense;
+  /// Ngày khởi tạo dự án (UTC từ server), có thể null với dữ liệu cũ.
+  DateTime? createdAt;
 
   factory Project.fromJson(Map<String, dynamic> json) {
+    DateTime? created;
+    final rawCreated = json['createdAt'];
+    if (rawCreated is String) {
+      created = DateTime.tryParse(rawCreated);
+    }
     return Project(
       id: json['id'] as String,
       name: json['name'] as String,
@@ -1252,6 +1289,7 @@ class Project {
       ownerPhone: (json['ownerPhone'] ?? '') as String,
       totalIncome: (json['totalIncome'] as num?)?.toDouble() ?? 0,
       totalExpense: (json['totalExpense'] as num?)?.toDouble() ?? 0,
+      createdAt: created,
     );
   }
 
@@ -1368,8 +1406,96 @@ String formatDate(DateTime date) {
   return '$d/$m/$y';
 }
 
-void _showUserPaymentQrDialog(BuildContext context, AppUser user) {
-  if (user.paymentQrBase64 == null) {
+/// Chỉ giữ chữ số trong ô số tiền (bỏ dấu chấm phân tách).
+String _amountFieldDigitsOnly(String input) =>
+    input.replaceAll(RegExp(r'[^\d]'), '');
+
+/// Nhóm 3 chữ số bằng dấu chấm (vd: 300.000.000).
+String formatAmountThousandsDots(String digitsOnly) {
+  if (digitsOnly.isEmpty) return '';
+  final sb = StringBuffer();
+  for (var i = 0; i < digitsOnly.length; i++) {
+    if (i > 0 && (digitsOnly.length - i) % 3 == 0) {
+      sb.write('.');
+    }
+    sb.write(digitsOnly[i]);
+  }
+  return sb.toString();
+}
+
+/// Ô nhập số tiền nguyên — tự thêm dấu "." ngăn cách hàng nghìn.
+class ThousandsDotAmountInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final raw = newValue.text;
+    final digits = _amountFieldDigitsOnly(raw);
+    if (digits.isEmpty) {
+      return const TextEditingValue(
+        text: '',
+        selection: TextSelection.collapsed(offset: 0),
+      );
+    }
+    final formatted = formatAmountThousandsDots(digits);
+
+    final cursorPos = newValue.selection.baseOffset.clamp(0, raw.length);
+    final beforeCursor = raw.substring(0, cursorPos);
+    var digitsLeft = _amountFieldDigitsOnly(beforeCursor).length;
+    if (digitsLeft > digits.length) {
+      digitsLeft = digits.length;
+    }
+
+    if (digitsLeft == 0) {
+      return TextEditingValue(
+        text: formatted,
+        selection: const TextSelection.collapsed(offset: 0),
+      );
+    }
+    if (digitsLeft >= digits.length) {
+      return TextEditingValue(
+        text: formatted,
+        selection: TextSelection.collapsed(offset: formatted.length),
+      );
+    }
+
+    var newOffset = 0;
+    var counted = 0;
+    for (var i = 0; i < formatted.length; i++) {
+      if (formatted[i] != '.') {
+        counted++;
+      }
+      newOffset = i + 1;
+      if (counted >= digitsLeft) break;
+    }
+    newOffset = newOffset.clamp(0, formatted.length);
+
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: newOffset),
+    );
+  }
+}
+
+Future<void> _showUserPaymentQrDialog(BuildContext context, AppUser user) async {
+  var b64 = user.paymentQrBase64?.trim();
+  if (b64 == null || b64.isEmpty) {
+    try {
+      final res = await http.get(Uri.parse('$apiBaseUrl/api/payment-qr'));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final fetched = data['paymentQrBase64'] as String?;
+        if (fetched != null && fetched.trim().isNotEmpty) {
+          b64 = fetched.trim();
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (!context.mounted) return;
+
+  if (b64 == null || b64.isEmpty) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1390,7 +1516,7 @@ void _showUserPaymentQrDialog(BuildContext context, AppUser user) {
     return;
   }
 
-  final bytes = base64Decode(user.paymentQrBase64!);
+  final bytes = base64Decode(b64);
 
   showDialog(
     context: context,
@@ -1440,6 +1566,182 @@ void _showUserPaymentQrDialog(BuildContext context, AppUser user) {
   );
 }
 
+/// Header trong menu người dùng: avatar, tên, badge số ngày còn lại (không chọn được).
+class _UserMenuHeaderEntry extends PopupMenuEntry<String> {
+  const _UserMenuHeaderEntry({required this.user});
+
+  final AppUser user;
+
+  @override
+  double get height => 124;
+
+  @override
+  bool represents(String? value) => false;
+
+  @override
+  State<_UserMenuHeaderEntry> createState() => _UserMenuHeaderEntryState();
+}
+
+class _UserMenuHeaderEntryState extends State<_UserMenuHeaderEntry> {
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final u = widget.user;
+    final name = u.name.isNotEmpty ? u.name : u.phone;
+    final sub = u.phone.isNotEmpty ? u.phone : u.email;
+    final days = u.remainingDays;
+    final expired = days <= 0;
+    final low = !expired && days <= 7;
+    final badgeColor = expired
+        ? scheme.errorContainer
+        : low
+            ? const Color(0xFFFFF3E0)
+            : scheme.primaryContainer;
+    final badgeOn = expired
+        ? scheme.onErrorContainer
+        : low
+            ? const Color(0xFFE65100)
+            : scheme.onPrimaryContainer;
+    final badgeText = expired
+        ? 'Đã hết hạn — gia hạn để tiếp tục'
+        : 'Còn $days ngày sử dụng';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              CircleAvatar(
+                radius: 22,
+                backgroundColor: scheme.primary.withValues(alpha: 0.15),
+                foregroundColor: scheme.primary,
+                child: Text(
+                  (name.isNotEmpty ? name[0] : '?').toUpperCase(),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 18,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: scheme.onSurface,
+                      ),
+                    ),
+                    if (sub.isNotEmpty)
+                      Text(
+                        sub,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: badgeColor,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: expired
+                    ? scheme.error.withValues(alpha: 0.35)
+                    : scheme.outline.withValues(alpha: 0.2),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  expired
+                      ? Icons.event_busy_rounded
+                      : Icons.event_available_rounded,
+                  size: 18,
+                  color: badgeOn,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    badgeText,
+                    style: textTheme.labelLarge?.copyWith(
+                      color: badgeOn,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProfileMenuRow extends StatelessWidget {
+  const _ProfileMenuRow({
+    required this.icon,
+    required this.label,
+    this.iconTint,
+    this.textTint,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color? iconTint;
+  final Color? textTint;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: (iconTint ?? scheme.primary).withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(
+            icon,
+            size: 20,
+            color: iconTint ?? scheme.primary,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                  color: textTint ?? scheme.onSurface,
+                  fontWeight: FontWeight.w500,
+                ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// Màn hình danh sách dự án
 class ProjectListScreen extends StatelessWidget {
   const ProjectListScreen({
@@ -1478,19 +1780,35 @@ class ProjectListScreen extends StatelessWidget {
             tooltip: currentUser.name.isNotEmpty
                 ? currentUser.name
                 : currentUser.phone,
+            position: PopupMenuPosition.under,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+            color: Theme.of(context).colorScheme.surface,
+            elevation: 10,
+            shadowColor: Colors.black.withValues(alpha: 0.2),
+            surfaceTintColor: Colors.transparent,
+            menuPadding: const EdgeInsets.symmetric(vertical: 6),
             icon: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  currentUser.name.isNotEmpty
-                      ? currentUser.name
-                      : currentUser.phone,
-                  style: const TextStyle(fontSize: 13),
-                  overflow: TextOverflow.ellipsis,
+                Flexible(
+                  child: Text(
+                    currentUser.name.isNotEmpty
+                        ? currentUser.name
+                        : currentUser.phone,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 8),
                 CircleAvatar(
-                  radius: 14,
+                  radius: 15,
+                  backgroundColor: Colors.white.withValues(alpha: 0.2),
+                  foregroundColor: Colors.white,
                   child: Text(
                     (currentUser.name.isNotEmpty
                             ? currentUser.name[0]
@@ -1498,9 +1816,13 @@ class ProjectListScreen extends StatelessWidget {
                                 ? currentUser.phone[0]
                                 : '?')
                         .toUpperCase(),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14,
+                    ),
                   ),
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 4),
               ],
             ),
             onSelected: (value) async {
@@ -1514,30 +1836,48 @@ class ProjectListScreen extends StatelessWidget {
                 onLogout();
               }
             },
-            itemBuilder: (ctx) => const [
-              PopupMenuItem(
+            itemBuilder: (ctx) => [
+              _UserMenuHeaderEntry(user: currentUser),
+              PopupMenuDivider(
+                height: 1,
+                thickness: 1,
+                color: Theme.of(ctx).colorScheme.outlineVariant.withValues(
+                      alpha: 0.5,
+                    ),
+              ),
+              PopupMenuItem<String>(
                 value: 'backup',
-                child: Row(
-                  children: [
-                    Icon(Icons.cloud_download_outlined, size: 20),
-                    SizedBox(width: 8),
-                    Text('Sao lưu dữ liệu'),
-                  ],
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: const _ProfileMenuRow(
+                  icon: Icons.cloud_download_rounded,
+                  label: 'Sao lưu dữ liệu',
                 ),
               ),
-              PopupMenuItem(
+              PopupMenuItem<String>(
                 value: 'change_password',
-                child: Text('Đổi mật khẩu'),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: const _ProfileMenuRow(
+                  icon: Icons.lock_reset_rounded,
+                  label: 'Đổi mật khẩu',
+                ),
               ),
-              PopupMenuItem(
+              PopupMenuItem<String>(
                 value: 'payment_qr',
-                child: Text('Thanh toán'),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: const _ProfileMenuRow(
+                  icon: Icons.qr_code_2_rounded,
+                  label: 'Thanh toán',
+                ),
               ),
-              PopupMenuItem(
+              const PopupMenuDivider(height: 1),
+              PopupMenuItem<String>(
                 value: 'logout',
-                child: Text(
-                  'Đăng xuất',
-                  style: TextStyle(color: Colors.red),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: _ProfileMenuRow(
+                  icon: Icons.logout_rounded,
+                  label: 'Đăng xuất',
+                  iconTint: Theme.of(ctx).colorScheme.error,
+                  textTint: Theme.of(ctx).colorScheme.error,
                 ),
               ),
             ],
@@ -1625,6 +1965,29 @@ class ProjectListScreen extends StatelessWidget {
                                         .bodySmall
                                         ?.copyWith(color: Colors.grey[700]),
                                   ),
+                                  if (project.createdAt != null) ...[
+                                    const SizedBox(height: 6),
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          Icons.calendar_today_outlined,
+                                          size: 14,
+                                          color: Colors.grey[600],
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'Khởi tạo: ${formatDate(project.createdAt!)}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: Colors.grey[600],
+                                                fontSize: 12,
+                                              ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                   const SizedBox(height: 10),
                                   Row(
                                     children: [
@@ -2457,8 +2820,9 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   }
 
   void _showEditTransactionSheet(ProjectTransaction tx) {
-    final amountController =
-        TextEditingController(text: tx.amount.toStringAsFixed(0));
+    final amountController = TextEditingController(
+        text: formatAmountThousandsDots(
+            _amountFieldDigitsOnly(tx.amount.toStringAsFixed(0))));
     final noteController = TextEditingController(text: tx.note);
     bool isIncome = tx.isIncome;
     final formKey = GlobalKey<FormState>();
@@ -2531,13 +2895,14 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                         prefixIcon: Icon(Icons.attach_money),
                       ),
                       keyboardType:
-                          const TextInputType.numberWithOptions(decimal: true),
+                          const TextInputType.numberWithOptions(decimal: false),
+                      inputFormatters: [ThousandsDotAmountInputFormatter()],
                       validator: (value) {
                         if (value == null || value.trim().isEmpty) {
                           return 'Vui lòng nhập số tiền';
                         }
-                        final parsed = double.tryParse(
-                            value.replaceAll(',', '').replaceAll(' ', ''));
+                        final digits = _amountFieldDigitsOnly(value);
+                        final parsed = double.tryParse(digits);
                         if (parsed == null || parsed <= 0) {
                           return 'Số tiền không hợp lệ';
                         }
@@ -2618,9 +2983,8 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                         FilledButton(
                           onPressed: () async {
                             if (!formKey.currentState!.validate()) return;
-                            final raw = amountController.text
-                                .replaceAll(',', '')
-                                .replaceAll(' ', '');
+                            final raw =
+                                _amountFieldDigitsOnly(amountController.text);
                             final amount = double.parse(raw);
                             final updated = ProjectTransaction(
                               id: tx.id,
@@ -2709,6 +3073,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                 description: descController.text.trim(),
                 totalIncome: widget.project.totalIncome,
                 totalExpense: widget.project.totalExpense,
+                createdAt: widget.project.createdAt,
               );
               widget.onUpdateProject(updated);
               Navigator.of(ctx).pop();
@@ -2794,13 +3159,14 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                         prefixIcon: Icon(Icons.attach_money),
                       ),
                       keyboardType:
-                          const TextInputType.numberWithOptions(decimal: true),
+                          const TextInputType.numberWithOptions(decimal: false),
+                      inputFormatters: [ThousandsDotAmountInputFormatter()],
                       validator: (value) {
                         if (value == null || value.trim().isEmpty) {
                           return 'Vui lòng nhập số tiền';
                         }
-                        final parsed = double.tryParse(
-                            value.replaceAll(',', '').replaceAll(' ', ''));
+                        final digits = _amountFieldDigitsOnly(value);
+                        final parsed = double.tryParse(digits);
                         if (parsed == null || parsed <= 0) {
                           return 'Số tiền không hợp lệ';
                         }
@@ -2865,9 +3231,8 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                         FilledButton(
                           onPressed: () async {
                             if (!formKey.currentState!.validate()) return;
-                            final raw = amountController.text
-                                .replaceAll(',', '')
-                                .replaceAll(' ', '');
+                            final raw =
+                                _amountFieldDigitsOnly(amountController.text);
                             final amount = double.parse(raw);
                             final tx = ProjectTransaction(
                               id:
