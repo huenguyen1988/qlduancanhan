@@ -2,15 +2,52 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
+import 'package:share_plus/share_plus.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
+import 'backup_download.dart' as backup_dl;
+
 const String apiBaseUrl = 'http://localhost:8080';
+
+/// Chuyển mã lỗi API (snake_case) sang thông báo tiếng Việt.
+String apiErrorToVietnamese(Object? raw) {
+  final code = raw?.toString().trim() ?? '';
+  switch (code) {
+    case 'phone_and_password_required':
+      return 'Vui lòng nhập số điện thoại và mật khẩu';
+    case 'phone_exists':
+      return 'Số điện thoại đã được đăng ký';
+    case 'user_not_found':
+      return 'Không tìm thấy tài khoản';
+    case 'invalid_credentials':
+      return 'Sai số điện thoại hoặc mật khẩu';
+    case 'user_blocked':
+      return 'Tài khoản đã bị khóa. Vui lòng liên hệ quản trị viên. Zalo 0918998303';
+    case 'subscription_expired':
+      return 'Gói sử dụng đã hết hạn. Vui lòng quét mã QR gia hạn';
+    case 'missing_fields':
+      return 'Vui lòng điền đủ thông tin';
+    case 'weak_password':
+      return 'Mật khẩu mới quá yếu (tối thiểu 4 ký tự)';
+    case 'missing_phone':
+      return 'Tài khoản thiếu số điện thoại, không thể xử lý';
+    default:
+      if (code.isEmpty) {
+        return 'Đăng nhập hoặc đăng ký không thành công';
+      }
+      if (!code.contains('_')) {
+        return code;
+      }
+      return 'Đã có lỗi. Vui lòng thử lại sau';
+  }
+}
 
 void main() {
   runApp(const ExpenseManagerApp());
@@ -90,6 +127,19 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
         setState(() {
           _loadingUsers = false;
         });
+      }
+    }
+  }
+
+  Future<void> _refreshCurrentUser() async {
+    if (_currentUser == null) return;
+    await _fetchUsers();
+    for (final u in _users) {
+      if (u.id == _currentUser!.id) {
+        setState(() {
+          _currentUser = u;
+        });
+        return;
       }
     }
   }
@@ -265,6 +315,172 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
     } catch (_) {}
   }
 
+  Future<void> _saveBackupJsonFile(
+    BuildContext context,
+    String filename,
+    String jsonText,
+  ) async {
+    if (kIsWeb) {
+      backup_dl.downloadJsonFileOnWeb(filename, jsonText);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Đã tải file sao lưu (JSON). Kiểm tra thư mục Tải xuống trên trình duyệt.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    try {
+      final bytes = Uint8List.fromList(utf8.encode(jsonText));
+      final xf = XFile.fromData(
+        bytes,
+        mimeType: 'application/json',
+        name: filename,
+      );
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [xf],
+          text: 'Sao lưu quản lý thu chi dự án',
+        ),
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Không thể chia sẻ file: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _showBackupDataDialog(BuildContext context) async {
+    final user = _currentUser;
+    if (user == null) return;
+
+    final passwordController = TextEditingController();
+    bool loading = false;
+    String? dialogError;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: const Text('Sao lưu dữ liệu'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      user.role == 'admin'
+                          ? 'Xuất file JSON: toàn bộ dự án, giao dịch và nhật ký trên hệ thống.'
+                          : 'Xuất file JSON: các dự án thuộc tài khoản của bạn, kèm giao dịch và nhật ký.',
+                      style: Theme.of(ctx).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: passwordController,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Mật khẩu xác nhận',
+                        prefixIcon: Icon(Icons.lock_outline),
+                      ),
+                    ),
+                    if (dialogError != null) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        dialogError!,
+                        style:
+                            TextStyle(color: Colors.red[700], fontSize: 12),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: loading ? null : () => Navigator.of(ctx).pop(),
+                  child: const Text('Huỷ'),
+                ),
+                FilledButton(
+                  onPressed: loading
+                      ? null
+                      : () async {
+                          final pw = passwordController.text;
+                          if (pw.length < 4) {
+                            setDialogState(() {
+                              dialogError =
+                                  'Vui lòng nhập đúng mật khẩu (tối thiểu 4 ký tự)';
+                            });
+                            return;
+                          }
+                          setDialogState(() {
+                            loading = true;
+                            dialogError = null;
+                          });
+                          try {
+                            final res = await http.post(
+                              Uri.parse('$apiBaseUrl/api/backup/export'),
+                              headers: {'content-type': 'application/json'},
+                              body: jsonEncode({
+                                'phone': user.phone,
+                                'password': pw,
+                              }),
+                            );
+                            if (res.statusCode == 200) {
+                              final pretty = const JsonEncoder.withIndent('  ')
+                                  .convert(jsonDecode(res.body));
+                              final safePhone = user.phone
+                                  .replaceAll(RegExp(r'[^\w\-]+'), '_');
+                              final fname =
+                                  'backup_duan_${safePhone}_${DateTime.now().millisecondsSinceEpoch}.json';
+                              if (ctx.mounted) {
+                                Navigator.of(ctx).pop();
+                              }
+                              if (context.mounted) {
+                                await _saveBackupJsonFile(
+                                    context, fname, pretty);
+                              }
+                              return;
+                            }
+                            final data = jsonDecode(res.body)
+                                as Map<String, dynamic>;
+                            setDialogState(() {
+                              loading = false;
+                              dialogError =
+                                  apiErrorToVietnamese(data['error']);
+                            });
+                          } catch (_) {
+                            setDialogState(() {
+                              loading = false;
+                              dialogError = 'Không thể kết nối server';
+                            });
+                          }
+                        },
+                  child: loading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Tạo file sao lưu'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    passwordController.dispose();
+  }
+
   Future<void> _showChangePasswordDialog(BuildContext context) async {
     final oldController = TextEditingController();
     final newController = TextEditingController();
@@ -386,9 +602,9 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                               final data = jsonDecode(res.body)
                                   as Map<String, dynamic>;
                               setState(() {
-                                error =
-                                    (data['error'] ?? 'Đổi mật khẩu thất bại')
-                                        .toString();
+                                error = data['error'] != null
+                                    ? apiErrorToVietnamese(data['error'])
+                                    : 'Đổi mật khẩu thất bại';
                               });
                             }
                           } catch (_) {
@@ -572,6 +788,14 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                                   loading: _loadingProjects,
                                   onRefresh: _fetchProjects,
                                   onAddProject: _addProject,
+                                  onShowPaymentQr: (ctx) async {
+                                    await _refreshCurrentUser();
+                                    final user = _currentUser;
+                                    if (user != null) {
+                                      _showUserPaymentQrDialog(ctx, user);
+                                    }
+                                  },
+                                  onBackupData: _showBackupDataDialog,
                                   onOpenProject: (project) {
                                     Navigator.of(context).push(
                                       MaterialPageRoute(
@@ -604,6 +828,14 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                                   onExtendUser: _extendUser,
                                   onChangeUserPassword:
                                       _adminChangeUserPassword,
+                                  onUpdateGlobalPaymentQr: (String? qr) async {
+                                    if (_users.isEmpty) return;
+                                    // backend sẽ tự đồng bộ QR này cho tất cả users
+                                    await _adminUpdateUserPaymentQr(
+                                      _users.first.id,
+                                      qr,
+                                    );
+                                  },
                                   onUpdateUserPaymentQr:
                                       _adminUpdateUserPaymentQr,
                                 ),
@@ -634,6 +866,14 @@ class _ExpenseManagerAppState extends State<ExpenseManagerApp> {
                               loading: _loadingProjects,
                               onRefresh: _fetchProjects,
                               onAddProject: _addProject,
+                              onShowPaymentQr: (ctx) async {
+                                await _refreshCurrentUser();
+                                final user = _currentUser;
+                                if (user != null) {
+                                  _showUserPaymentQrDialog(ctx, user);
+                                }
+                              },
+                              onBackupData: _showBackupDataDialog,
                               onOpenProject: (project) {
                                 Navigator.of(context).push(
                                   MaterialPageRoute(
@@ -681,12 +921,72 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoginMode = true;
   bool _loading = false;
   String? _error;
+  /// true khi server trả lỗi `subscription_expired` (đăng nhập).
+  bool _subscriptionExpired = false;
+  bool _showRenewalQr = false;
+  Uint8List? _renewalQrBytes;
+  bool _renewalQrLoading = false;
+  String? _renewalQrMessage;
+
+  void _clearRenewalUi() {
+    _subscriptionExpired = false;
+    _showRenewalQr = false;
+    _renewalQrBytes = null;
+    _renewalQrLoading = false;
+    _renewalQrMessage = null;
+  }
+
+  Future<void> _fetchPublicPaymentQr() async {
+    setState(() {
+      _renewalQrLoading = true;
+      _renewalQrMessage = null;
+    });
+    try {
+      final res = await http.get(Uri.parse('$apiBaseUrl/api/payment-qr'));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final b64 = data['paymentQrBase64'] as String?;
+        if (b64 != null && b64.isNotEmpty) {
+          if (mounted) {
+            setState(() {
+              _renewalQrBytes = base64Decode(b64);
+              _renewalQrLoading = false;
+            });
+          }
+        } else {
+          if (mounted) {
+            setState(() {
+              _renewalQrBytes = null;
+              _renewalQrLoading = false;
+              _renewalQrMessage =
+                  'Chưa có mã QR thanh toán trên hệ thống. Vui lòng liên hệ quản trị viên.';
+            });
+          }
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _renewalQrLoading = false;
+            _renewalQrMessage = 'Không tải được mã QR. Thử lại sau.';
+          });
+        }
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _renewalQrLoading = false;
+          _renewalQrMessage = 'Không thể kết nối server để lấy mã QR.';
+        });
+      }
+    }
+  }
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() {
       _loading = true;
       _error = null;
+      _clearRenewalUi();
     });
     try {
       final phone = _phoneController.text.trim();
@@ -713,13 +1013,22 @@ class _LoginScreenState extends State<LoginScreen> {
         widget.onAuthenticated(user);
       } else {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final code = (data['error'] ?? '').toString();
         setState(() {
-          _error = (data['error'] ?? 'Lỗi đăng nhập/đăng ký').toString();
+          _error = apiErrorToVietnamese(data['error']);
+          _subscriptionExpired =
+              _isLoginMode && code == 'subscription_expired';
+          if (!_subscriptionExpired) {
+            _showRenewalQr = false;
+            _renewalQrBytes = null;
+            _renewalQrMessage = null;
+          }
         });
       }
     } catch (e) {
       setState(() {
         _error = 'Không thể kết nối server';
+        _clearRenewalUi();
       });
     } finally {
       if (mounted) {
@@ -738,11 +1047,12 @@ class _LoginScreenState extends State<LoginScreen> {
           constraints: const BoxConstraints(maxWidth: 400),
           child: Padding(
             padding: const EdgeInsets.all(24),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
+            child: SingleChildScrollView(
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                   const SizedBox(height: 20),
                   Text(
                     'Quản lý thu chi dự án',
@@ -805,7 +1115,77 @@ class _LoginScreenState extends State<LoginScreen> {
                     Text(
                       _error!,
                       style: TextStyle(color: Colors.red[700], fontSize: 13),
+                      textAlign: TextAlign.center,
                     ),
+                    if (_subscriptionExpired) ...[
+                      const SizedBox(height: 12),
+                      TextButton.icon(
+                        onPressed: _loading
+                            ? null
+                            : () async {
+                                final show = !_showRenewalQr;
+                                setState(() {
+                                  _showRenewalQr = show;
+                                  if (!show) {
+                                    _renewalQrMessage = null;
+                                  }
+                                });
+                                if (show &&
+                                    _renewalQrBytes == null &&
+                                    !_renewalQrLoading) {
+                                  await _fetchPublicPaymentQr();
+                                }
+                              },
+                        icon: const Icon(Icons.qr_code_2_outlined, size: 20),
+                        label: Text(
+                          _showRenewalQr
+                              ? 'Ẩn mã QR thanh toán gia hạn'
+                              : 'Thanh toán gia hạn — xem mã QR',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      if (_showRenewalQr) ...[
+                        if (_renewalQrLoading)
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 16),
+                            child: Center(
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ),
+                        if (_renewalQrMessage != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Text(
+                              _renewalQrMessage!,
+                              style: TextStyle(
+                                color: Colors.orange[800],
+                                fontSize: 12,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        if (_renewalQrBytes != null) ...[
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Image.memory(
+                              _renewalQrBytes!,
+                              width: 200,
+                              height: 200,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Quét mã để thanh toán gia hạn. Vui lòng thanh toán 300.000đ cho 1 năm sử dụng. Nội dung chuyển khoản: số điện thoại đăng nhập',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: Colors.grey[700]),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ],
+                    ],
                     const SizedBox(height: 8),
                   ],
                   SizedBox(
@@ -829,6 +1209,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             setState(() {
                               _isLoginMode = !_isLoginMode;
                               _error = null;
+                              _clearRenewalUi();
                             });
                           },
                     child: Text(_isLoginMode
@@ -836,6 +1217,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         : 'Đã có tài khoản? Đăng nhập'),
                   ),
                 ],
+                ),
               ),
             ),
           ),
@@ -1030,7 +1412,11 @@ void _showUserPaymentQrDialog(BuildContext context, AppUser user) {
           ),
           const SizedBox(height: 12),
           Text(
-            'Quét mã để thanh toán cho tài khoản:',
+            'Số tiền: 300.000 đ cho 1 năm sử dụng',
+            style: Theme.of(ctx).textTheme.bodySmall,
+          ),
+          Text(
+            'Nội dung chuyển khoản: số điện thoại đăng nhập',
             style: Theme.of(ctx).textTheme.bodySmall,
           ),
           const SizedBox(height: 4),
@@ -1066,6 +1452,8 @@ class ProjectListScreen extends StatelessWidget {
     required this.onRefresh,
     required this.onAddProject,
     required this.onOpenProject,
+    required this.onShowPaymentQr,
+    required this.onBackupData,
   });
 
   final AppUser currentUser;
@@ -1076,6 +1464,8 @@ class ProjectListScreen extends StatelessWidget {
   final Future<void> Function() onRefresh;
   final void Function(Project) onAddProject;
   final void Function(Project) onOpenProject;
+  final Future<void> Function(BuildContext context) onShowPaymentQr;
+  final Future<void> Function(BuildContext context) onBackupData;
 
   @override
   Widget build(BuildContext context) {
@@ -1117,12 +1507,24 @@ class ProjectListScreen extends StatelessWidget {
               if (value == 'change_password') {
                 await onChangePassword(context);
               } else if (value == 'payment_qr') {
-                _showUserPaymentQrDialog(context, currentUser);
+                await onShowPaymentQr(context);
+              } else if (value == 'backup') {
+                await onBackupData(context);
               } else if (value == 'logout') {
                 onLogout();
               }
             },
             itemBuilder: (ctx) => const [
+              PopupMenuItem(
+                value: 'backup',
+                child: Row(
+                  children: [
+                    Icon(Icons.cloud_download_outlined, size: 20),
+                    SizedBox(width: 8),
+                    Text('Sao lưu dữ liệu'),
+                  ],
+                ),
+              ),
               PopupMenuItem(
                 value: 'change_password',
                 child: Text('Đổi mật khẩu'),
@@ -1461,24 +1863,39 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     }
   }
 
-  Future<pw.Font?> _loadPdfFont() async {
+  Future<pw.ThemeData?> _loadPdfTheme() async {
     try {
-      final data = await rootBundle.load('assets/fonts/Roboto-Regular.ttf');
-      if (data.lengthInBytes < 1000) return null;
-      return pw.Font.ttf(data);
-    } catch (_) {}
-    try {
-      final uri = Uri.parse(
-        'https://cdn.jsdelivr.net/gh/google/fonts@main/apache/roboto/Static/Roboto-Regular.ttf',
+      final regular =
+          await rootBundle.load('assets/fonts/Roboto/static/Roboto-Regular.ttf');
+      final bold =
+          await rootBundle.load('assets/fonts/Roboto/static/Roboto-Bold.ttf');
+      final italic =
+          await rootBundle.load('assets/fonts/Roboto/static/Roboto-Italic.ttf');
+      final boldItalic = await rootBundle
+          .load('assets/fonts/Roboto/static/Roboto-BoldItalic.ttf');
+
+      return pw.ThemeData.withFont(
+        base: pw.Font.ttf(regular),
+        bold: pw.Font.ttf(bold),
+        italic: pw.Font.ttf(italic),
+        boldItalic: pw.Font.ttf(boldItalic),
       );
-      final res = await http.get(uri);
-      if (res.statusCode == 200 &&
-          res.bodyBytes.length > 10000 &&
-          res.bodyBytes.length < 500000) {
-        final data = ByteData.sublistView(res.bodyBytes);
-        return pw.Font.ttf(data);
-      }
     } catch (_) {}
+
+    // Fallback Unicode font (covers Vietnamese very well).
+    try {
+      final base = await PdfGoogleFonts.notoSansRegular();
+      final bold = await PdfGoogleFonts.notoSansBold();
+      final italic = await PdfGoogleFonts.notoSansItalic();
+      final boldItalic = await PdfGoogleFonts.notoSansBoldItalic();
+      return pw.ThemeData.withFont(
+        base: base,
+        bold: bold,
+        italic: italic,
+        boldItalic: boldItalic,
+      );
+    } catch (_) {}
+
     return null;
   }
 
@@ -1611,22 +2028,12 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   Future<void> _exportProjectToPdf() async {
     pw.ThemeData? theme;
     try {
-      final font = await _loadPdfFont();
-      theme = font != null ? pw.ThemeData.withFont(base: font) : null;
+      theme = await _loadPdfTheme();
     } catch (_) {}
 
-    Uint8List bytes;
-    try {
-      bytes = await _buildPdfBytes(theme, useVietnameseLabels: theme != null);
-    } catch (e) {
-      if (e.toString().contains('head') ||
-          e.toString().contains('TTF') ||
-          e.toString().contains('table')) {
-        bytes = await _buildPdfBytes(null, useVietnameseLabels: false);
-      } else {
-        rethrow;
-      }
-    }
+    // Always keep Vietnamese labels. If font loading fails, the PDF still
+    // exports, but labels remain in Vietnamese instead of degrading to ASCII.
+    final bytes = await _buildPdfBytes(theme, useVietnameseLabels: true);
 
     final name = 'du-an-${widget.project.name.replaceAll(RegExp(r'[^\w\s-]'), '').replaceAll(' ', '_')}.pdf';
     if (!mounted) return;
@@ -3116,6 +3523,7 @@ class AdminUserScreen extends StatefulWidget {
     required this.onDeleteUser,
     required this.onExtendUser,
     required this.onChangeUserPassword,
+    required this.onUpdateGlobalPaymentQr,
     required this.onUpdateUserPaymentQr,
   });
 
@@ -3128,6 +3536,8 @@ class AdminUserScreen extends StatefulWidget {
   final Future<void> Function(String userId, int addDays) onExtendUser;
   final Future<void> Function(String userId, String newPassword)
       onChangeUserPassword;
+  final Future<void> Function(String? paymentQrBase64)
+      onUpdateGlobalPaymentQr;
   final Future<void> Function(String userId, String? paymentQrBase64)
       onUpdateUserPaymentQr;
 
@@ -3171,6 +3581,18 @@ class _AdminUserScreenState extends State<AdminUserScreen> {
       appBar: AppBar(
         title: const Text('Admin - Quản lý user'),
         centerTitle: true,
+        actions: [
+          IconButton(
+            tooltip: 'Tải mã QR thanh toán cho tất cả',
+            onPressed: (loading || widget.users.isEmpty)
+                ? null
+                : () => _showAdminGlobalPaymentQrDialog(
+                      context,
+                      widget.onUpdateGlobalPaymentQr,
+                    ),
+            icon: const Icon(Icons.qr_code_2_outlined),
+          ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(60),
           child: Padding(
@@ -3305,6 +3727,9 @@ class _AdminUserScreenState extends State<AdminUserScreen> {
                                     role: user.role,
                                     isActive: !user.isActive,
                                     remainingDays: user.remainingDays,
+                                    // Keep current payment QR so it isn't cleared
+                                    // when admin updates other user fields.
+                                    paymentQrBase64: user.paymentQrBase64,
                                   );
                                   await widget.onUpdateUser(updated);
                                 } else if (value == 'toggle_role') {
@@ -3316,6 +3741,9 @@ class _AdminUserScreenState extends State<AdminUserScreen> {
                                     role: isAdmin ? 'user' : 'admin',
                                     isActive: user.isActive,
                                     remainingDays: user.remainingDays,
+                                    // Keep current payment QR so it isn't cleared
+                                    // when admin updates other user fields.
+                                    paymentQrBase64: user.paymentQrBase64,
                                   );
                                   await widget.onUpdateUser(updated);
                                 } else if (value == 'extend') {
@@ -3324,9 +3752,6 @@ class _AdminUserScreenState extends State<AdminUserScreen> {
                                 } else if (value == 'change_password') {
                                   _showAdminChangePasswordDialog(ctx, user,
                                       widget.onChangeUserPassword);
-                                } else if (value == 'payment_qr') {
-                                  _showAdminPaymentQrDialog(
-                                      ctx, user, widget.onUpdateUserPaymentQr);
                                 } else if (value == 'delete') {
                                   await widget.onDeleteUser(user.id);
                                 }
@@ -3351,16 +3776,6 @@ class _AdminUserScreenState extends State<AdminUserScreen> {
                                       Icon(Icons.date_range, size: 20),
                                       SizedBox(width: 8),
                                       Text('Gia hạn sử dụng'),
-                                    ],
-                                  ),
-                                ),
-                                const PopupMenuItem(
-                                  value: 'payment_qr',
-                                  child: Row(
-                                    children: [
-                                      Icon(Icons.qr_code, size: 20),
-                                      SizedBox(width: 8),
-                                      Text('Mã QR thanh toán'),
                                     ],
                                   ),
                                 ),
@@ -3420,10 +3835,14 @@ class _AdminUserScreenState extends State<AdminUserScreen> {
             const SizedBox(height: 16),
             TextField(
               controller: daysController,
-              keyboardType: TextInputType.number,
+              keyboardType: const TextInputType.numberWithOptions(
+                signed: true,
+                decimal: false,
+              ),
               decoration: const InputDecoration(
-                labelText: 'Thêm số ngày',
-                hintText: '30',
+                labelText: 'Thêm / trừ số ngày',
+                hintText: '30 hoặc -7',
+                helperText: 'Số dương: gia hạn. Số âm: giảm ngày còn lại.',
                 prefixIcon: Icon(Icons.calendar_today_outlined),
               ),
             ),
@@ -3437,21 +3856,28 @@ class _AdminUserScreenState extends State<AdminUserScreen> {
           FilledButton(
             onPressed: () async {
               final days = int.tryParse(daysController.text.trim());
-              if (days == null || days < 1) {
+              if (days == null || days == 0) {
                 ScaffoldMessenger.of(ctx).showSnackBar(
-                  const SnackBar(content: Text('Vui lòng nhập số ngày hợp lệ (≥ 1)')),
+                  const SnackBar(
+                    content: Text(
+                      'Vui lòng nhập số ngày khác 0 (dương để cộng, âm để trừ)',
+                    ),
+                  ),
                 );
                 return;
               }
               Navigator.pop(ctx);
               await onExtendUser(user.id, days);
               if (ctx.mounted) {
+                final msg = days > 0
+                    ? 'Đã cộng thêm $days ngày cho user'
+                    : 'Đã trừ ${-days} ngày cho user';
                 ScaffoldMessenger.of(ctx).showSnackBar(
-                  SnackBar(content: Text('Đã gia hạn thêm $days ngày cho user')),
+                  SnackBar(content: Text(msg)),
                 );
               }
             },
-            child: const Text('Gia hạn'),
+            child: const Text('Áp dụng'),
           ),
         ],
       ),
@@ -3824,6 +4250,132 @@ class _AdminUserScreenState extends State<AdminUserScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Text('Lưu'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  static void _showAdminGlobalPaymentQrDialog(
+    BuildContext context,
+    Future<void> Function(String? paymentQrBase64)
+        onUpdateGlobalPaymentQr,
+  ) {
+    Uint8List? imageBytes = null;
+    String? imageMime;
+    bool loading = false;
+    String? error;
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: const Text('Mã QR thanh toán (dùng cho tất cả)'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (imageBytes != null) ...[
+                    Center(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(
+                          imageBytes!,
+                          height: 180,
+                          width: 180,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  TextButton.icon(
+                    onPressed: loading
+                        ? null
+                        : () async {
+                            final result =
+                                await FilePicker.platform.pickFiles(
+                              type: FileType.image,
+                              withData: true,
+                            );
+                            if (result != null &&
+                                result.files.isNotEmpty &&
+                                result.files.first.bytes != null) {
+                              setState(() {
+                                imageBytes = result.files.first.bytes;
+                                imageMime = result.files.first.extension;
+                                error = null;
+                              });
+                            }
+                          },
+                    icon: const Icon(Icons.upload_file),
+                    label: const Text('Chọn ảnh QR từ máy'),
+                  ),
+                  if (imageBytes != null)
+                    TextButton.icon(
+                      onPressed: loading
+                          ? null
+                          : () {
+                              setState(() {
+                                imageBytes = null;
+                                imageMime = null;
+                              });
+                            },
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                      label: const Text(
+                        'Xoá mã QR hiện tại',
+                        style: TextStyle(color: Colors.red),
+                      ),
+                    ),
+                  if (error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      error!,
+                      style: const TextStyle(
+                        color: Colors.red,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: loading ? null : () => Navigator.of(ctx).pop(),
+                  child: const Text('Huỷ'),
+                ),
+                FilledButton(
+                  onPressed: loading
+                      ? null
+                      : () async {
+                          setState(() {
+                            loading = true;
+                            error = null;
+                          });
+                          try {
+                            final base64 =
+                                imageBytes != null ? base64Encode(imageBytes!) : null;
+                            await onUpdateGlobalPaymentQr(base64);
+                            if (context.mounted) {
+                              Navigator.of(ctx).pop();
+                            }
+                          } catch (_) {
+                            setState(() {
+                              error =
+                                  'Không thể lưu mã QR. Vui lòng thử lại sau.';
+                              loading = false;
+                            });
+                          }
+                        },
+                  child: const Text('Lưu'),
                 ),
               ],
             );

@@ -194,6 +194,78 @@ Future<void> main(List<String> args) async {
     );
   });
 
+  // Admin set a user's new password directly (no old password needed).
+  app.post('/api/users/<id>/change-password', (Request req, String id) async {
+    final body = await req.readAsString();
+    final data = jsonDecode(body) as Map<String, dynamic>;
+    final newPassword = (data['newPassword'] ?? '').toString();
+
+    if (id.isEmpty || newPassword.isEmpty) {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'missing_fields'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+    if (newPassword.length < 4) {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'weak_password'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final user = await usersColl.findOne(whereId(id));
+    if (user == null) {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'user_not_found'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final phone = user['phone']?.toString().trim() ?? '';
+    if (phone.isEmpty) {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'missing_phone'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    await usersColl.update(
+      whereId(id),
+      {
+        r'$set': {'passwordHash': _hashPassword(phone, newPassword)}
+      },
+    );
+
+    return Response.ok(
+      jsonEncode({'success': true}),
+      headers: {'content-type': 'application/json'},
+    );
+  });
+
+  /// Mã QR thanh toán dùng chung — không cần đăng nhập (vd: user hết hạn vẫn xem được).
+  app.get('/api/payment-qr', (Request req) async {
+    final users = await usersColl.find().toList();
+    for (final u in users) {
+      final raw = u['paymentQrBase64'];
+      if (raw == null) continue;
+      final qr = raw.toString().trim();
+      if (qr.isNotEmpty) {
+        return Response.ok(
+          jsonEncode({'paymentQrBase64': qr}),
+          headers: {'content-type': 'application/json'},
+        );
+      }
+    }
+    return Response.ok(
+      jsonEncode({'paymentQrBase64': null}),
+      headers: {'content-type': 'application/json'},
+    );
+  });
+
   // ---- Project routes ----
 
   app.get('/api/projects', (Request req) async {
@@ -208,7 +280,7 @@ Future<void> main(List<String> args) async {
       double income = 0;
       double expense = 0;
       for (final t in txs) {
-        final amount = (t['amount'] as num).toDouble();
+        final amount = _toDouble(t['amount']);
         final isIncome = t['isIncome'] as bool;
         if (isIncome) {
           income += amount;
@@ -300,7 +372,7 @@ Future<void> main(List<String> args) async {
     final result = txs
         .map((t) => {
               'id': t['_id'],
-              'amount': (t['amount'] as num).toDouble(),
+              'amount': _toDouble(t['amount']),
               'isIncome': t['isIncome'],
               'note': t['note'] ?? '',
               'date': (t['date'] as DateTime).toIso8601String(),
@@ -323,7 +395,7 @@ Future<void> main(List<String> args) async {
     final txDoc = {
       '_id': txId,
       'projectId': id,
-      'amount': (data['amount'] as num).toDouble(),
+      'amount': _toDouble(data['amount']),
       'isIncome': data['isIncome'] as bool,
       'note': data['note'] ?? '',
       'date': DateTime.now(),
@@ -354,7 +426,7 @@ Future<void> main(List<String> args) async {
     final data = jsonDecode(body) as Map<String, dynamic>;
 
     final updateData = <String, dynamic>{
-      'amount': (data['amount'] as num).toDouble(),
+      'amount': _toDouble(data['amount']),
       'isIncome': data['isIncome'] as bool,
       'note': data['note'] ?? '',
     };
@@ -379,7 +451,7 @@ Future<void> main(List<String> args) async {
     return Response.ok(
       jsonEncode({
         'id': updated['_id'],
-        'amount': (updated['amount'] as num).toDouble(),
+        'amount': _toDouble(updated['amount']),
         'isIncome': updated['isIncome'],
         'note': updated['note'] ?? '',
         'date': (updated['date'] as DateTime).toIso8601String(),
@@ -443,6 +515,111 @@ Future<void> main(List<String> args) async {
     );
   });
 
+  /// Sao lưu JSON: dự án + giao dịch + nhật ký của user (xác thực mật khẩu).
+  /// Admin: toàn bộ dự án hệ thống. User thường: chỉ dự án có ownerPhone trùng SĐT.
+  /// Cho phép kể cả khi gói hết hạn (chỉ chặn tài khoản bị khóa).
+  app.post('/api/backup/export', (Request req) async {
+    final body = await req.readAsString();
+    final data = jsonDecode(body) as Map<String, dynamic>;
+    final phone = (data['phone'] ?? '').toString().trim();
+    final password = (data['password'] ?? '').toString();
+
+    if (phone.isEmpty || password.isEmpty) {
+      return Response(
+        400,
+        body: jsonEncode({'error': 'phone_and_password_required'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final user = await usersColl.findOne({'phone': phone});
+    if (user == null) {
+      return Response(
+        404,
+        body: jsonEncode({'error': 'user_not_found'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final expectedHash = user['passwordHash']?.toString() ?? '';
+    if (expectedHash.isEmpty ||
+        expectedHash != _hashPassword(phone, password)) {
+      return Response(
+        401,
+        body: jsonEncode({'error': 'invalid_credentials'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    if (user['isActive'] == false) {
+      return Response(
+        403,
+        body: jsonEncode({'error': 'user_blocked'}),
+        headers: {'content-type': 'application/json'},
+      );
+    }
+
+    final isAdmin = (user['role'] ?? 'user').toString() == 'admin';
+    final List<Map<String, dynamic>> projectDocs;
+    if (isAdmin) {
+      projectDocs = await projectsColl.find().toList();
+    } else {
+      projectDocs = await projectsColl.find({'ownerPhone': phone}).toList();
+    }
+
+    final exportedProjects = <Map<String, dynamic>>[];
+    for (final p in projectDocs) {
+      final projectId = p['_id'] as String;
+      final txs =
+          await transactionsColl.find({'projectId': projectId}).toList();
+      final notes =
+          await notesColl.find({'projectId': projectId}).toList();
+
+      exportedProjects.add({
+        'id': projectId,
+        'name': p['name'],
+        'description': p['description'] ?? '',
+        'ownerPhone': p['ownerPhone'] ?? '',
+        'transactions': txs.map((t) {
+          return {
+            'id': t['_id'],
+            'amount': _toDouble(t['amount']),
+            'isIncome': t['isIncome'],
+            'note': t['note'] ?? '',
+            'date': (t['date'] as DateTime).toIso8601String(),
+            'imageBase64': t['imageBase64'],
+            'imageContentType': t['imageContentType'],
+          };
+        }).toList(),
+        'notes': notes.map((n) {
+          return {
+            'id': n['_id'],
+            'content': n['content'] ?? '',
+            'date': (n['date'] as DateTime).toIso8601String(),
+            'imageBase64': n['imageBase64'],
+            'imageContentType': n['imageContentType'],
+          };
+        }).toList(),
+      });
+    }
+
+    final payload = {
+      'format': 'qlduancanhan_backup_v1',
+      'exportedAt': DateTime.now().toUtc().toIso8601String(),
+      'user': {
+        'phone': phone,
+        'name': user['name'] ?? '',
+        'role': user['role'] ?? 'user',
+      },
+      'projects': exportedProjects,
+    };
+
+    return Response.ok(
+      jsonEncode(payload),
+      headers: {'content-type': 'application/json'},
+    );
+  });
+
   // ---- User admin routes ----
 
   app.get('/api/users', (Request req) async {
@@ -486,6 +663,25 @@ Future<void> main(List<String> args) async {
     final body = await req.readAsString();
     final data = jsonDecode(body) as Map<String, dynamic>;
 
+    // If admin updates payment QR, propagate the same QR to all users.
+    // Safety: only propagate when the request body contains only
+    // `paymentQrBase64` (so other user updates won't accidentally clear QR).
+    if (data.containsKey('paymentQrBase64') && data.keys.length == 1) {
+      final qrRaw = data['paymentQrBase64'];
+      final String? paymentQrBase64 =
+          qrRaw == null ? null : qrRaw.toString();
+
+      final allUsers = await usersColl.find().toList();
+      for (final u in allUsers) {
+        final userId = u['_id']?.toString();
+        if (userId == null || userId.isEmpty) continue;
+        await usersColl.update(
+          whereId(userId),
+          {r'$set': {'paymentQrBase64': paymentQrBase64}},
+        );
+      }
+    }
+
     final update = <String, dynamic>{};
     if (data.containsKey('name')) update['name'] = data['name'];
     if (data.containsKey('email')) update['email'] = data['email'];
@@ -498,13 +694,21 @@ Future<void> main(List<String> args) async {
     }
     if (data.containsKey('addDays')) {
       final addDays = (data['addDays'] as num).toInt();
-      if (addDays > 0) {
+      if (addDays != 0) {
         final user = await usersColl.findOne(whereId(id));
         final now = DateTime.now().toUtc();
-        DateTime base = now;
+        late DateTime base;
         if (user != null && user['expiresAt'] != null) {
           final current = user['expiresAt'] as DateTime;
-          if (current.isAfter(now)) base = current;
+          if (addDays > 0) {
+            // Gia hạn: cộng từ ngày hết hạn hiện tại (nếu còn hạn) hoặc từ hôm nay
+            base = current.isAfter(now) ? current : now;
+          } else {
+            // Trừ ngày: luôn lùi từ ngày hết hạn đã lưu (dù còn hạn hay đã hết)
+            base = current;
+          }
+        } else {
+          base = now;
         }
         update['expiresAt'] = base.add(Duration(days: addDays));
       }
@@ -549,7 +753,21 @@ Future<void> main(List<String> args) async {
 }
 
 mongo.SelectorBuilder whereId(String id) =>
-    mongo.where.eq('_id', id) as mongo.SelectorBuilder;
+    mongo.where.eq('_id', id);
+
+double _toDouble(dynamic value) {
+  if (value == null) return 0.0;
+  if (value is num) return value.toDouble();
+
+  // mongo_dart may decode BSON int64 as some Int64 type (not a Dart `num`).
+  // Instead of referencing a concrete type, try `toInt()` dynamically.
+  try {
+    final i = (value as dynamic).toInt();
+    return i.toDouble();
+  } catch (_) {
+    return double.tryParse(value.toString()) ?? 0.0;
+  }
+}
 
 Future<void> _seedIfEmpty({
   required mongo.DbCollection projectsColl,
@@ -715,6 +933,7 @@ Map<String, dynamic> _userToJson(Map<String, dynamic> u) {
     'isActive': u['isActive'] ?? true,
     'expiresAt': expiresAt?.toIso8601String(),
     'remainingDays': remainingDays,
+    'paymentQrBase64': u['paymentQrBase64'] as String?,
   };
 }
 
