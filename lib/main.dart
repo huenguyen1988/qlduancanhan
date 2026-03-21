@@ -2508,14 +2508,14 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                       );
                     }
                   } else {
-                    await Printing.layoutPdf(
-                      onLayout: (_) async => bytes,
-                      name: name,
+                    await Printing.sharePdf(
+                      bytes: bytes,
+                      filename: name,
                     );
                   }
                 },
                 icon: const Icon(Icons.print_outlined),
-                label: Text(kIsWeb ? 'Tải file PDF (để in)' : 'In / Lưu thành PDF'),
+                label: const Text('Tải / Lưu file PDF'),
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
