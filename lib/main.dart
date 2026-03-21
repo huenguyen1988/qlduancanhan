@@ -8,6 +8,7 @@ import 'package:flutter/services.dart'
     show rootBundle, TextInputFormatter, TextEditingValue, TextSelection;
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
+import 'package:image/image.dart' as img;
 import 'package:share_plus/share_plus.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -1421,6 +1422,56 @@ String formatDate(DateTime date) {
 String _amountFieldDigitsOnly(String input) =>
     input.replaceAll(RegExp(r'[^\d]'), '');
 
+const int _maxUploadImageBytes = 10 * 1024 * 1024; // 10MB
+const int _maxUploadImageDimension = 1920;
+
+/// Giảm độ phân giải + nén ảnh trước khi upload.
+/// Trả về null nếu sau tối ưu vẫn vượt quá 10MB.
+Future<Uint8List?> _prepareImageForUpload(Uint8List originalBytes) async {
+  if (originalBytes.isEmpty) return null;
+
+  final decoded = img.decodeImage(originalBytes);
+  if (decoded == null) {
+    // Không decode được: chỉ chấp nhận nếu file gốc <= 10MB.
+    return originalBytes.length <= _maxUploadImageBytes ? originalBytes : null;
+  }
+
+  img.Image processed = decoded;
+  final longestSide = max(processed.width, processed.height);
+  if (longestSide > _maxUploadImageDimension) {
+    final scale = _maxUploadImageDimension / longestSide;
+    processed = img.copyResize(
+      processed,
+      width: max(1, (processed.width * scale).round()),
+      height: max(1, (processed.height * scale).round()),
+      interpolation: img.Interpolation.average,
+    );
+  }
+
+  var jpeg = Uint8List.fromList(img.encodeJpg(processed, quality: 85));
+  if (jpeg.length <= _maxUploadImageBytes) return jpeg;
+
+  // Thử giảm quality trước.
+  for (final q in const [75, 65, 55, 45, 35]) {
+    jpeg = Uint8List.fromList(img.encodeJpg(processed, quality: q));
+    if (jpeg.length <= _maxUploadImageBytes) return jpeg;
+  }
+
+  // Nếu vẫn lớn, giảm thêm kích thước ảnh rồi nén lại.
+  for (var i = 0; i < 4; i++) {
+    processed = img.copyResize(
+      processed,
+      width: max(1, (processed.width * 0.85).round()),
+      height: max(1, (processed.height * 0.85).round()),
+      interpolation: img.Interpolation.average,
+    );
+    jpeg = Uint8List.fromList(img.encodeJpg(processed, quality: 55));
+    if (jpeg.length <= _maxUploadImageBytes) return jpeg;
+  }
+
+  return null;
+}
+
 /// Nhóm 3 chữ số bằng dấu chấm (vd: 300.000.000).
 String formatAmountThousandsDots(String digitsOnly) {
   if (digitsOnly.isEmpty) return '';
@@ -1538,6 +1589,7 @@ Future<void> _showUserPaymentQrDialog(BuildContext context, AppUser user) async 
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          ClipRRect(
           ClipRRect(
             borderRadius: BorderRadius.circular(16),
             child: Image.memory(
@@ -2431,10 +2483,34 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
               FilledButton.icon(
                 onPressed: () async {
                   Navigator.pop(ctx);
-                  await Printing.layoutPdf(
-                    onLayout: (_) async => bytes,
-                    name: name,
-                  );
+                  if (kIsWeb) {
+                    try {
+                      await Printing.layoutPdf(
+                        onLayout: (_) async => bytes,
+                        name: name,
+                      );
+                    } catch (_) {
+                      backup_dl.downloadBytesFileOnWeb(
+                        name,
+                        bytes,
+                        mimeType: 'application/pdf',
+                      );
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Trình duyệt này không hỗ trợ in trực tiếp. Đã tải file PDF về máy.',
+                            ),
+                          ),
+                        );
+                      }
+                    }
+                  } else {
+                    await Printing.layoutPdf(
+                      onLayout: (_) async => bytes,
+                      name: name,
+                    );
+                  }
                 },
                 icon: const Icon(Icons.print_outlined),
                 label: const Text('In / Lưu thành PDF'),
@@ -2443,13 +2519,21 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
               OutlinedButton.icon(
                 onPressed: () async {
                   Navigator.pop(ctx);
-                  await Printing.sharePdf(
-                    bytes: bytes,
-                    filename: name,
-                  );
+                  if (kIsWeb) {
+                    backup_dl.downloadBytesFileOnWeb(
+                      name,
+                      bytes,
+                      mimeType: 'application/pdf',
+                    );
+                  } else {
+                    await Printing.sharePdf(
+                      bytes: bytes,
+                      filename: name,
+                    );
+                  }
                 },
                 icon: const Icon(Icons.ios_share_outlined),
-                label: const Text('Tải file PDF & chia sẻ'),
+                label: Text(kIsWeb ? 'Tải file PDF' : 'Tải file PDF & chia sẻ'),
               ),
             ],
           ),
@@ -2941,12 +3025,23 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                             if (result != null &&
                                 result.files.isNotEmpty &&
                                 result.files.first.bytes != null) {
+                              final processed = await _prepareImageForUpload(
+                                result.files.first.bytes!,
+                              );
+                              if (!ctx.mounted) return;
+                              if (processed == null) {
+                                ScaffoldMessenger.of(ctx).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Ảnh vượt quá 10MB sau khi tối ưu. Vui lòng chọn ảnh khác.',
+                                    ),
+                                  ),
+                                );
+                                return;
+                              }
                               setState(() {
-                                imageBytes = result.files.first.bytes;
-                                imageMime =
-                                    result.files.first.extension != null
-                                        ? 'image/${result.files.first.extension}'
-                                        : 'image/*';
+                                imageBytes = processed;
+                                imageMime = 'image/jpeg';
                               });
                             }
                           },
@@ -3205,11 +3300,23 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                           if (result != null &&
                               result.files.isNotEmpty &&
                               result.files.first.bytes != null) {
+                            final processed = await _prepareImageForUpload(
+                              result.files.first.bytes!,
+                            );
+                            if (!ctx.mounted) return;
+                            if (processed == null) {
+                              ScaffoldMessenger.of(ctx).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Ảnh vượt quá 10MB sau khi tối ưu. Vui lòng chọn ảnh khác.',
+                                  ),
+                                ),
+                              );
+                              return;
+                            }
                             setState(() {
-                              imageBytes = result.files.first.bytes;
-                              imageMime = result.files.first.extension != null
-                                  ? 'image/${result.files.first.extension}'
-                                  : 'image/*';
+                              imageBytes = processed;
+                              imageMime = 'image/jpeg';
                             });
                           }
                         },
@@ -3684,12 +3791,23 @@ class _ProjectDiaryScreenState extends State<ProjectDiaryScreen> {
                             if (result != null &&
                                 result.files.isNotEmpty &&
                                 result.files.first.bytes != null) {
+                              final processed = await _prepareImageForUpload(
+                                result.files.first.bytes!,
+                              );
+                              if (!ctx.mounted) return;
+                              if (processed == null) {
+                                ScaffoldMessenger.of(ctx).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'Ảnh vượt quá 10MB sau khi tối ưu. Vui lòng chọn ảnh khác.',
+                                    ),
+                                  ),
+                                );
+                                return;
+                              }
                               setState(() {
-                                imageBytes = result.files.first.bytes;
-                                imageMime =
-                                    result.files.first.extension != null
-                                        ? 'image/${result.files.first.extension}'
-                                        : 'image/*';
+                                imageBytes = processed;
+                                imageMime = 'image/jpeg';
                               });
                             }
                           },
@@ -4554,9 +4672,20 @@ class _AdminUserScreenState extends State<AdminUserScreen> {
                             if (result != null &&
                                 result.files.isNotEmpty &&
                                 result.files.first.bytes != null) {
+                              final processed = await _prepareImageForUpload(
+                                result.files.first.bytes!,
+                              );
+                              if (!ctx.mounted) return;
+                              if (processed == null) {
+                                setState(() {
+                                  error =
+                                      'Ảnh vượt quá 10MB sau khi tối ưu. Vui lòng chọn ảnh nhỏ hơn.';
+                                });
+                                return;
+                              }
                               setState(() {
-                                imageBytes = result.files.first.bytes;
-                                imageMime = result.files.first.extension;
+                                imageBytes = processed;
+                                imageMime = 'jpeg';
                                 error = null;
                               });
                             }
@@ -4685,9 +4814,20 @@ class _AdminUserScreenState extends State<AdminUserScreen> {
                             if (result != null &&
                                 result.files.isNotEmpty &&
                                 result.files.first.bytes != null) {
+                              final processed = await _prepareImageForUpload(
+                                result.files.first.bytes!,
+                              );
+                              if (!ctx.mounted) return;
+                              if (processed == null) {
+                                setState(() {
+                                  error =
+                                      'Ảnh vượt quá 10MB sau khi tối ưu. Vui lòng chọn ảnh nhỏ hơn.';
+                                });
+                                return;
+                              }
                               setState(() {
-                                imageBytes = result.files.first.bytes;
-                                imageMime = result.files.first.extension;
+                                imageBytes = processed;
+                                imageMime = 'jpeg';
                                 error = null;
                               });
                             }

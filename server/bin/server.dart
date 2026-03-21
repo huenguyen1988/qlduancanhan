@@ -21,8 +21,16 @@ Future<String?> _firstPaymentQrFromUsers(mongo.DbCollection usersColl) async {
 }
 
 Future<void> main(List<String> args) async {
-  final mongoUri =
-      Platform.environment['MONGO_URI'] ?? 'mongodb://localhost:27017/duan1';
+  final envMongoUri = Platform.environment['MONGO_URI'];
+  final mongoUri = (envMongoUri == null || envMongoUri.trim().isEmpty)
+      ? 'mongodb://localhost:27017/duan1'
+      : envMongoUri.trim();
+
+  if (envMongoUri == null || envMongoUri.trim().isEmpty) {
+    stdout.writeln(
+      '⚠️ MONGO_URI chưa được set. Đang dùng mặc định: $mongoUri',
+    );
+  }
 
   final db = await mongo.Db.create(mongoUri);
   await db.open();
