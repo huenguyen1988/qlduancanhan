@@ -3,7 +3,7 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
     show rootBundle, TextInputFormatter, TextEditingValue, TextSelection;
@@ -17,15 +17,19 @@ import 'package:printing/printing.dart';
 
 import 'backup_download.dart' as backup_dl;
 
-/// Gốc API. Trên web (Docker/CapRover): cùng origin → nginx proxy `/api` sang backend.
-/// Mobile/desktop: `API_BASE_URL` khi build, mặc định localhost.
+/// Gốc API. Web **release** (Docker/CapRover): cùng origin → nginx proxy `/api`.
+/// Web **debug/profile**: mặc định `http://localhost:8080` vì port dev Flutter không có `/api`.
+/// Ghi đè: `--dart-define=API_BASE_URL=https://host` (mọi nền tảng).
 String get apiBaseUrl {
-  if (kIsWeb) {
-    return Uri.base.origin;
-  }
   const fromEnv = String.fromEnvironment('API_BASE_URL', defaultValue: '');
   if (fromEnv.isNotEmpty) {
     return fromEnv.replaceAll(RegExp(r'/$'), '');
+  }
+  if (kIsWeb) {
+    if (!kReleaseMode) {
+      return 'http://localhost:8080';
+    }
+    return Uri.base.origin;
   }
   return 'http://localhost:8080';
 }
@@ -2383,50 +2387,15 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   }
 
   Future<pw.ThemeData?> _loadPdfTheme() async {
+    // Noto nhúng trong bundle (`fonts/noto/` ở gốc project → URL web `assets/fonts/noto/...`).
     try {
-      final regular = await rootBundle.load('assets/fonts/Roboto-Regular.ttf');
-      final bold = await rootBundle.load('assets/fonts/Roboto-Bold.ttf');
-      final italic = await rootBundle.load('assets/fonts/Roboto-Italic.ttf');
+      final regular =
+          await rootBundle.load('fonts/noto/NotoSans-Regular.ttf');
+      final bold = await rootBundle.load('fonts/noto/NotoSans-Bold.ttf');
+      final italic =
+          await rootBundle.load('fonts/noto/NotoSans-Italic.ttf');
       final boldItalic =
-          await rootBundle.load('assets/fonts/Roboto-BoldItalic.ttf');
-
-      return pw.ThemeData.withFont(
-        base: pw.Font.ttf(regular),
-        bold: pw.Font.ttf(bold),
-        italic: pw.Font.ttf(italic),
-        boldItalic: pw.Font.ttf(boldItalic),
-      );
-    } catch (_) {}
-
-    // Ưu tiên bộ Roboto Condensed trong thư mục static.
-    try {
-      final regular =
-          await rootBundle.load('assets/fonts/Roboto/static/Roboto_Condensed-Regular.ttf');
-      final bold =
-          await rootBundle.load('assets/fonts/Roboto/static/Roboto_Condensed-Bold.ttf');
-      final italic =
-          await rootBundle.load('assets/fonts/Roboto/static/Roboto_Condensed-Italic.ttf');
-      final boldItalic = await rootBundle
-          .load('assets/fonts/Roboto/static/Roboto_Condensed-BoldItalic.ttf');
-
-      return pw.ThemeData.withFont(
-        base: pw.Font.ttf(regular),
-        bold: pw.Font.ttf(bold),
-        italic: pw.Font.ttf(italic),
-        boldItalic: pw.Font.ttf(boldItalic),
-      );
-    } catch (_) {}
-
-    // Legacy path (nếu dự án có bộ Roboto thường trong thư mục static).
-    try {
-      final regular =
-          await rootBundle.load('assets/fonts/Roboto/static/Roboto-Regular.ttf');
-      final bold =
-          await rootBundle.load('assets/fonts/Roboto/static/Roboto-Bold.ttf');
-      final italic =
-          await rootBundle.load('assets/fonts/Roboto/static/Roboto-Italic.ttf');
-      final boldItalic = await rootBundle
-          .load('assets/fonts/Roboto/static/Roboto-BoldItalic.ttf');
+          await rootBundle.load('fonts/noto/NotoSans-BoldItalic.ttf');
 
       return pw.ThemeData.withFont(
         base: pw.Font.ttf(regular),

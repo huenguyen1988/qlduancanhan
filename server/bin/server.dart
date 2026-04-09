@@ -8,6 +8,9 @@ import 'package:shelf/shelf_io.dart' as io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_cors_headers/shelf_cors_headers.dart';
 
+/// MongoDB chạy trên máy (test / dev). Override bằng biến môi trường `MONGO_URI`.
+const String kLocalMongoUriForTest = 'mongodb://127.0.0.1:27017/duan1';
+
 /// QR thanh toán dùng chung: lấy từ bất kỳ user nào đã có `paymentQrBase64`.
 Future<String?> _firstPaymentQrFromUsers(mongo.DbCollection usersColl) async {
   final users = await usersColl.find().toList();
@@ -23,7 +26,7 @@ Future<String?> _firstPaymentQrFromUsers(mongo.DbCollection usersColl) async {
 Future<void> main(List<String> args) async {
   final envMongoUri = Platform.environment['MONGO_URI'];
   final mongoUri = (envMongoUri == null || envMongoUri.trim().isEmpty)
-      ? 'mongodb://localhost:27017/duan1'
+      ? kLocalMongoUriForTest
       : envMongoUri.trim();
 
   if (envMongoUri == null || envMongoUri.trim().isEmpty) {

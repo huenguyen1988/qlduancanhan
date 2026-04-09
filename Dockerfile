@@ -37,6 +37,6 @@ EXPOSE 80
 ENV BACKEND_PORT=8080
 # Không cố định host MongoDB trong Dockerfile.
 # Trên CapRover, bạn cần set `MONGO_URI` theo đúng tên service nội bộ của app MongoDB.
-# Nếu không set, server sẽ fallback về `mongodb://localhost:27017/duan1`.
+# Nếu không set, server sẽ fallback về `mongodb://127.0.0.1:27017/duan1` (xem `kLocalMongoUriForTest` trong server).
 
 CMD ["/start.sh"]
